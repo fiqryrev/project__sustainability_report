@@ -201,6 +201,7 @@ def extract_pdf_text(
     client,
     emiten_code: str,
     year: int,
+    force_ocr: bool = False,
 ) -> tuple[str, list[PageDiagnostic], list[dict]]:
     """Extract text from all pages of a PDF.
 
@@ -212,6 +213,9 @@ def extract_pdf_text(
         client: google.genai.Client instance.
         emiten_code: Company code for diagnostics.
         year: Report year for diagnostics.
+        force_ocr: If True, use Gemini OCR for ALL pages regardless of
+            classification. Useful for re-processing files where PyMuPDF
+            produced incomplete text on mixed-content pages.
 
     Returns:
         Tuple of (full_text, page_diagnostics, token_usage_records).
@@ -223,7 +227,7 @@ def extract_pdf_text(
     file_name = pdf_path.name
     total_pages = len(doc)
 
-    logger.debug("Processing %s (%d pages)", file_name, total_pages)
+    logger.debug("Processing %s (%d pages, force_ocr=%s)", file_name, total_pages, force_ocr)
 
     # First pass: classify all pages to decide on caching
     page_classifications = []
@@ -232,12 +236,15 @@ def extract_pdf_text(
         classification, img_count, img_coverage = classify_page(page)
         page_classifications.append((classification, img_count, img_coverage))
 
-    image_page_count = sum(1 for c, _, _ in page_classifications if c == "image")
+    if force_ocr:
+        ocr_page_count = total_pages
+    else:
+        ocr_page_count = sum(1 for c, _, _ in page_classifications if c == "image")
 
     # Create cache if many OCR pages
     cached_content = None
-    if image_page_count >= CONTEXT_CACHE_MIN_PAGES:
-        logger.info("%s has %d image pages, creating OCR cache", file_name, image_page_count)
+    if ocr_page_count >= CONTEXT_CACHE_MIN_PAGES:
+        logger.info("%s has %d OCR pages, creating OCR cache", file_name, ocr_page_count)
         cached_content = create_ocr_cache(client)
 
     # Second pass: extract text
@@ -265,8 +272,11 @@ def extract_pdf_text(
             raw_text = page.get_text().strip()
             diag.raw_text_length = len(raw_text)
 
+            # Decide whether to OCR this page
+            should_ocr = force_ocr or classification == "image"
+
             try:
-                if classification == "image":
+                if should_ocr:
                     # OCR this page
                     diag.extraction_method = "gemini_ocr"
                     page_image = render_page_to_image(page)

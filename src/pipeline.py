@@ -24,6 +24,7 @@ from src.config import (
     MAX_WORKERS,
     OUTPUT_DIR,
     PAGE_DIAGNOSTICS_PATH,
+    PDF_DIR,
     PRICE_INPUT_PER_M,
     PRICE_OUTPUT_PER_M,
     PROJECT_ID,
@@ -384,6 +385,364 @@ def run_pipeline(
     logger.info("=" * 60)
 
     return wordcount_df, summary_df
+
+
+def get_pymupdf_files() -> list[str]:
+    """Identify files that had pages extracted via PyMuPDF (not OCR).
+
+    Checks two sources:
+    1. page_diagnostics.csv for files with extraction_method == 'pymupdf'
+    2. process_summary.csv for files with direct_extract_pages > 0 that are
+       not yet in page_diagnostics (files that were fully text-extractable
+       and never recorded in diagnostics)
+
+    Returns:
+        Sorted list of filenames that used PyMuPDF extraction.
+    """
+    pymupdf_set: set[str] = set()
+
+    # Source 1: page diagnostics
+    if PAGE_DIAGNOSTICS_PATH.exists():
+        diag_df = pd.read_csv(PAGE_DIAGNOSTICS_PATH)
+        pymupdf_from_diag = (
+            diag_df[diag_df["extraction_method"] == "pymupdf"]["file_name"]
+            .unique()
+            .tolist()
+        )
+        pymupdf_set.update(pymupdf_from_diag)
+
+    # Source 2: process summary — files with direct_extract_pages > 0
+    # that are NOT already in page_diagnostics (missed by source 1)
+    summary_path = OUTPUT_DIR / "process_summary.csv"
+    if summary_path.exists():
+        sum_df = pd.read_csv(summary_path)
+        success_df = sum_df[sum_df["status"] == "success"]
+        direct_files = (
+            success_df[success_df["direct_extract_pages"] > 0]["file_name"]
+            .unique()
+            .tolist()
+        )
+        # Only add files not already fully reprocessed in diagnostics
+        if PAGE_DIAGNOSTICS_PATH.exists():
+            diag_files = set(diag_df["file_name"].unique())
+            for fname in direct_files:
+                if fname not in diag_files:
+                    pymupdf_set.add(fname)
+        else:
+            pymupdf_set.update(direct_files)
+
+    if not pymupdf_set:
+        logger.warning("No PyMuPDF files found in diagnostics or process summary")
+
+    return sorted(pymupdf_set)
+
+
+def reprocess_pymupdf_files(
+    max_files: int | None = None,
+    batch_size: int | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Re-process files that used PyMuPDF extraction, using full OCR on all pages.
+
+    This identifies files from page_diagnostics.csv that had any page extracted
+    via PyMuPDF, then re-extracts ALL pages of those files using Gemini OCR.
+    Updates extracted text files, word counts, and all output CSVs.
+
+    Args:
+        max_files: Max files to reprocess. None = all PyMuPDF files.
+        batch_size: Files per batch (default: config.BATCH_SIZE).
+
+    Returns:
+        Tuple of (wordcount_df, summary_df) with updated results.
+    """
+    if batch_size is None:
+        batch_size = BATCH_SIZE
+
+    pipeline_start = time.time()
+
+    # Setup
+    ensure_dirs()
+    setup_logger()
+    logger.info("=" * 60)
+    logger.info("Reprocess Pipeline — Full OCR for PyMuPDF files")
+    logger.info("=" * 60)
+
+    # Identify files to reprocess
+    pymupdf_filenames = get_pymupdf_files()
+    if not pymupdf_filenames:
+        logger.info("No PyMuPDF files found to reprocess.")
+        return _load_final_results()
+
+    logger.info("Found %d files with PyMuPDF extraction", len(pymupdf_filenames))
+
+    if max_files is not None:
+        pymupdf_filenames = pymupdf_filenames[:max_files]
+        logger.info("Capped to %d files (max_files=%d)", len(pymupdf_filenames), max_files)
+
+    # Resolve filenames to paths
+    reprocess_files = []
+    for fname in pymupdf_filenames:
+        pdf_path = PDF_DIR / fname
+        if pdf_path.exists():
+            reprocess_files.append(pdf_path)
+        else:
+            logger.warning("PDF not found for reprocessing: %s", fname)
+
+    if not reprocess_files:
+        logger.info("No PDF files found on disk to reprocess.")
+        return _load_final_results()
+
+    logger.info("Will reprocess %d files with force_ocr=True", len(reprocess_files))
+
+    # Load dictionary
+    dictionary_df = load_dictionary()
+
+    # Init Gemini client
+    client = init_gemini_client()
+
+    # Process files
+    all_results = []
+    all_summaries = []
+    all_token_records = []
+    all_page_diagnostics = []
+
+    batches = [
+        reprocess_files[i:i + batch_size]
+        for i in range(0, len(reprocess_files), batch_size)
+    ]
+
+    with tqdm(total=len(reprocess_files), desc="Reprocessing (full OCR)", unit="file") as pbar:
+        for batch_idx, batch_files in enumerate(batches, start=1):
+            logger.info(
+                "Reprocess batch %d/%d (%d files)",
+                batch_idx, len(batches), len(batch_files),
+            )
+
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                future_to_file = {
+                    executor.submit(
+                        _reprocess_single_file, f, dictionary_df, client
+                    ): f
+                    for f in batch_files
+                }
+
+                for future in as_completed(future_to_file):
+                    pdf_path = future_to_file[future]
+                    try:
+                        wc_rows, summary, tokens, page_diags = future.result()
+                        all_results.extend(wc_rows)
+                        all_summaries.append(summary)
+                        all_token_records.extend(tokens)
+                        all_page_diagnostics.extend(page_diags)
+                    except Exception as e:
+                        logger.error("Unexpected error reprocessing %s: %s", pdf_path.name, e)
+                        all_summaries.append(
+                            _build_failed_summary(pdf_path.name, str(e), 0.0)
+                        )
+                    pbar.update(1)
+
+    # Now update the final output files by replacing reprocessed entries
+    reprocessed_fnames = {f.name for f in reprocess_files}
+
+    _update_final_outputs(
+        reprocessed_fnames,
+        all_results,
+        all_summaries,
+        all_token_records,
+        all_page_diagnostics,
+    )
+
+    # Log summary
+    elapsed = time.time() - pipeline_start
+    new_summary_df = pd.DataFrame(all_summaries)
+    success_count = len(new_summary_df[new_summary_df["status"] == "success"]) if not new_summary_df.empty else 0
+    failed_count = len(new_summary_df[new_summary_df["status"] == "failed"]) if not new_summary_df.empty else 0
+
+    logger.info("=" * 60)
+    logger.info("Reprocess Complete")
+    logger.info("  Files reprocessed: %d (success: %d, failed: %d)", len(reprocess_files), success_count, failed_count)
+    logger.info("  New word count rows: %d", len(all_results))
+    if all_token_records:
+        token_df = pd.DataFrame(all_token_records)
+        total_input = token_df["prompt_tokens"].sum()
+        total_output = token_df["output_tokens"].sum()
+        total_cost = (
+            total_input / 1_000_000 * PRICE_INPUT_PER_M
+            + total_output / 1_000_000 * PRICE_OUTPUT_PER_M
+        )
+        logger.info("  Total tokens: %d input, %d output", total_input, total_output)
+        logger.info("  Estimated cost: $%.6f", total_cost)
+    logger.info("  Total time: %.1f seconds", elapsed)
+    logger.info("=" * 60)
+
+    return _load_final_results()
+
+
+def _reprocess_single_file(
+    pdf_path: Path,
+    dictionary_df: pd.DataFrame,
+    client,
+) -> tuple[list[dict], dict, list[dict], list]:
+    """Re-process a single PDF with force_ocr=True.
+
+    Same as process_single_file but forces OCR on every page.
+    """
+    file_name = pdf_path.name
+    start_time = time.time()
+
+    try:
+        emiten_code, year = parse_filename(pdf_path)
+    except ValueError as e:
+        logger.error("Filename parse error for %s: %s", file_name, e)
+        summary = _build_failed_summary(file_name, str(e), time.time() - start_time)
+        return [], summary, [], []
+
+    try:
+        full_text, page_diagnostics, token_records = extract_pdf_text(
+            pdf_path, client, emiten_code, year, force_ocr=True
+        )
+
+        # Overwrite extracted text file
+        save_extracted_text(full_text, file_name)
+
+        word_counts = count_all_phrases(full_text, dictionary_df)
+
+        word_count_rows = [
+            {
+                "Emiten Code": emiten_code,
+                "Year": year,
+                "Dimensions": wc["dimensions"],
+                "Wordlist": wc["wordlist"],
+                "Word count": wc["word_count"],
+            }
+            for wc in word_counts
+        ]
+
+        # Build summary
+        total_pages = len(page_diagnostics)
+        text_pages = sum(1 for d in page_diagnostics if d.classification == "text")
+        image_pages = sum(1 for d in page_diagnostics if d.classification == "image")
+        ocr_pages = sum(1 for d in page_diagnostics if d.extraction_method == "gemini_ocr")
+        direct_pages = sum(1 for d in page_diagnostics if d.extraction_method == "pymupdf")
+        total_chars = sum(d.final_text_length for d in page_diagnostics)
+        total_input_tokens = sum(d.ocr_input_tokens for d in page_diagnostics)
+        total_output_tokens = sum(d.ocr_output_tokens for d in page_diagnostics)
+        ocr_cost = (
+            total_input_tokens / 1_000_000 * PRICE_INPUT_PER_M
+            + total_output_tokens / 1_000_000 * PRICE_OUTPUT_PER_M
+        )
+
+        summary = {
+            "file_name": file_name,
+            "emiten_code": emiten_code,
+            "year": year,
+            "status": "success",
+            "error_message": "",
+            "total_pages": total_pages,
+            "text_pages": text_pages,
+            "image_pages": image_pages,
+            "ocr_pages": ocr_pages,
+            "direct_extract_pages": direct_pages,
+            "total_extracted_chars": total_chars,
+            "ocr_input_tokens": total_input_tokens,
+            "ocr_output_tokens": total_output_tokens,
+            "ocr_estimated_cost_usd": round(ocr_cost, 8),
+            "processing_time_seconds": round(time.time() - start_time, 2),
+            "timestamp_processed": datetime.now().isoformat(),
+        }
+
+        logger.info(
+            "Reprocessed %s: %d pages (all OCR), %d chars, %.4fs",
+            file_name, total_pages, total_chars,
+            time.time() - start_time,
+        )
+
+        return word_count_rows, summary, token_records, page_diagnostics
+
+    except Exception as e:
+        logger.error("Failed to reprocess %s: %s", file_name, e, exc_info=True)
+        summary = _build_failed_summary(file_name, str(e), time.time() - start_time, emiten_code, year)
+        return [], summary, [], []
+
+
+def _update_final_outputs(
+    reprocessed_fnames: set[str],
+    new_results: list[dict],
+    new_summaries: list[dict],
+    new_token_records: list[dict],
+    new_page_diagnostics: list,
+) -> None:
+    """Replace reprocessed file entries in all final output CSVs.
+
+    Loads existing CSVs, removes rows for reprocessed files, appends
+    new rows, and saves back.
+    """
+    from dataclasses import asdict
+
+    # Build DataFrames from new data
+    new_wc_df = pd.DataFrame(new_results) if new_results else pd.DataFrame()
+    new_sum_df = pd.DataFrame(new_summaries) if new_summaries else pd.DataFrame()
+    new_tok_df = pd.DataFrame(new_token_records) if new_token_records else pd.DataFrame()
+
+    # Map emiten_code to file_name for word count filtering
+    code_year_pairs = set()
+    for s in new_summaries:
+        if s.get("emiten_code") and s.get("year"):
+            code_year_pairs.add((s["emiten_code"], s["year"]))
+
+    # --- Word count results ---
+    wc_path = OUTPUT_DIR / "wordcount_results.csv"
+    if wc_path.exists():
+        existing_wc = pd.read_csv(wc_path)
+        # Remove rows for reprocessed files
+        if code_year_pairs and not existing_wc.empty:
+            mask = existing_wc.apply(
+                lambda r: (r["Emiten Code"], r["Year"]) not in code_year_pairs,
+                axis=1,
+            )
+            existing_wc = existing_wc[mask]
+        wc_final = pd.concat([existing_wc, new_wc_df], ignore_index=True)
+    else:
+        wc_final = new_wc_df
+    if not wc_final.empty:
+        save_results(wc_final, wc_path)
+
+    # --- Process summary ---
+    sum_path = OUTPUT_DIR / "process_summary.csv"
+    if sum_path.exists():
+        existing_sum = pd.read_csv(sum_path)
+        existing_sum = existing_sum[~existing_sum["file_name"].isin(reprocessed_fnames)]
+        sum_final = pd.concat([existing_sum, new_sum_df], ignore_index=True)
+    else:
+        sum_final = new_sum_df
+    if not sum_final.empty:
+        save_results(sum_final, sum_path)
+
+    # --- Token usage ---
+    if not new_tok_df.empty:
+        tok_path = TOKEN_USAGE_PATH
+        if tok_path.exists():
+            existing_tok = pd.read_csv(tok_path)
+            existing_tok = existing_tok[~existing_tok["file_name"].isin(reprocessed_fnames)]
+            tok_final = pd.concat([existing_tok, new_tok_df], ignore_index=True)
+        else:
+            tok_final = new_tok_df
+        save_results(tok_final, tok_path)
+
+    # --- Page diagnostics ---
+    if new_page_diagnostics:
+        new_diag_df = pd.DataFrame([asdict(d) for d in new_page_diagnostics])
+        if PAGE_DIAGNOSTICS_PATH.exists():
+            existing_diag = pd.read_csv(PAGE_DIAGNOSTICS_PATH)
+            existing_diag = existing_diag[~existing_diag["file_name"].isin(reprocessed_fnames)]
+            diag_final = pd.concat([existing_diag, new_diag_df], ignore_index=True)
+        else:
+            diag_final = new_diag_df
+        save_results(diag_final, PAGE_DIAGNOSTICS_PATH)
+
+    logger.info(
+        "Updated final outputs: replaced %d reprocessed files in all CSVs",
+        len(reprocessed_fnames),
+    )
 
 
 def _merge_with_existing(

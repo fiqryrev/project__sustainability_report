@@ -12,12 +12,11 @@ Full results from processing **2,322 PDF annual reports** across **898 companies
 | Successful | 2,318 (99.8%) |
 | Failed | 4 (filename parse errors — duplicate files with `(1)` suffix) |
 | Total pages extracted | 4,699 |
-| Pages via PyMuPDF (text) | 1,782 (37.9%) |
-| Pages via Gemini OCR (scanned) | 2,917 (62.1%) |
-| Total characters extracted | 18,935,792 |
-| Gemini input tokens | 3,293,423 |
-| Gemini output tokens | 2,623,135 |
-| Estimated OCR cost | ~$1.00 |
+| Pages via Gemini OCR | 4,699 (100%) |
+| Total characters extracted | 19,195,427 |
+| Gemini input tokens | 5,304,211 |
+| Gemini output tokens | 4,149,010 |
+| Estimated OCR cost | ~$7.57 |
 
 ### Failed Files
 
@@ -36,42 +35,39 @@ All 4 failures were due to duplicate files with `(1)` in the filename:
 
 **234,118 total rows** (2,318 files × 101 dictionary terms)
 
-**1,750 non-zero matches** (0.7% of all rows)
+**1,867 non-zero matches** (0.8% of all rows)
 
 ### Top Matched Terms
 
 | Rank | Term | Total Count | Dimension |
 |---|---|---|---|
-| 1 | information | 4,980 | Modern information system |
-| 2 | information management | 338 | Smart manufacturing |
-| 3 | communication | 91 | Modern information system |
-| 4 | integrated | 49 | Smart manufacturing |
+| 1 | information | 5,284 | Modern information system |
+| 2 | information management | 401 | Smart manufacturing |
+| 3 | communication | 92 | Modern information system |
+| 4 | integrated | 40 | Smart manufacturing |
 | 5 | industrial | 34 | Modern information system |
-| 6 | terminal | 25 | Modern information system |
-| 7 | internet | 21 | Internet business model |
+| 6 | terminal | 29 | Modern information system |
+| 7 | internet | 24 | Internet business model |
 | 8 | cloud services | 8 | Digital technology applications |
 | 9 | data center | 8 | Digital technology applications |
 | 10 | integration | 8 | Smart manufacturing |
 | 11 | cloud computing | 7 | Digital technology applications |
 | 12 | information system | 7 | Modern information system |
 | 13 | e-commerce | 4 | Internet business model |
-| 14 | CNC | 3 | Smart manufacturing |
+| 14 | Artificial intelligence | 2 | Smart manufacturing |
 | 15 | big data | 2 | Digital technology applications |
-| 16 | Artificial intelligence | 2 | Smart manufacturing |
-| 17 | O2O | 1 | Internet business model |
-| 18 | Data management | 1 | Digital technology applications |
-| 19 | of ine | 1 | Internet business model |
+| 16 | Data management | 1 | Digital technology applications |
 
 ### Results by Dimension
 
 | Dimension | Total Matches | Non-Zero Rows | % of Non-Zero |
 |---|---|---|---|
-| Modern information system | 5,137 | 1,354 | 77.4% |
-| Smart manufacturing | 400 | 375 | 21.4% |
-| Internet business model | 27 | 13 | 0.7% |
-| Digital technology applications | 26 | 8 | 0.5% |
+| Modern information system | 5,446 | 1,416 | 75.8% |
+| Smart manufacturing | 451 | 432 | 23.1% |
+| Internet business model | 28 | 11 | 0.6% |
+| Digital technology applications | 26 | 8 | 0.4% |
 
-> **"Modern information system"** dominates because it contains broad terms like "information" (4,980 matches), "communication" (91), and "terminal" (25) which appear frequently in annual reports.
+> **"Modern information system"** dominates because it contains broad terms like "information" (5,284 matches), "communication" (92), and "terminal" (29) which appear frequently in annual reports.
 
 ---
 
@@ -79,15 +75,14 @@ All 4 failures were due to duplicate files with `(1)` in the filename:
 
 | Classification | Pages | % |
 |---|---|---|
-| Image (scanned) | 1,611 | 62.3% |
-| Text (extractable) | 977 | 37.7% |
+| Image (scanned) | 2,917 | 62.1% |
+| Text (extractable) | 1,782 | 37.9% |
 
 | Extraction Method | Pages | % |
 |---|---|---|
-| Gemini OCR | 1,611 | 62.3% |
-| PyMuPDF direct | 977 | 37.7% |
+| Gemini OCR | 4,699 | 100% |
 
-> Most PDFs in this dataset are scanned documents, requiring Gemini OCR for text extraction.
+> All 4,699 pages were extracted using Gemini OCR. Even pages originally classified as "text" were reprocessed through OCR to ensure consistent extraction quality across the entire dataset.
 
 ---
 
@@ -179,7 +174,7 @@ Per-page extraction diagnostics.
 
 ## Notes
 
-- **Low match rate (0.7%)** is expected: the dictionary contains English digital transformation terms, while most Indonesian annual reports contain limited English technical vocabulary in their sustainability disclosures.
+- **Low match rate (0.8%)** is expected: the dictionary contains English digital transformation terms, while most Indonesian annual reports contain limited English technical vocabulary in their sustainability disclosures.
 - **"information" dominance**: The term "information" is a common English word that appears in many contexts (e.g., "for more information"), inflating the Modern information system dimension.
 - **Substring matching**: Current matching uses exact substring matching — "information" matches inside "misinformation" and "disinformation". Future refinement could use word-boundary matching.
 - **Short PDFs**: Most files have 1–3 pages (avg 2.0 pages), suggesting these are excerpted sections rather than full annual reports.
