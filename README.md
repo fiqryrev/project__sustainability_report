@@ -1,4 +1,4 @@
-# NLP Word Count Pipeline — Sustainability Reports
+# Word Count Pipeline — Sustainability Reports
 
 Automated pipeline that extracts text from PDF annual reports and counts occurrences of digital transformation dictionary terms. Built for academic research on corporate sustainability disclosures.
 
