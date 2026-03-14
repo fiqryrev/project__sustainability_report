@@ -23,8 +23,10 @@ Automated pipeline that extracts text from PDF annual reports and counts occurre
 │   └── batch_ocr.py            # Batch OCR via Gemini Batch Prediction API
 │
 ├── docs/                       # Documentation
-│   ├── PLAN.md                 # Architecture & design decisions
-│   └── HOW-TO.md               # Practical usage guide
+│   ├── guides/
+│   │   └── 001-setup-and-usage.md        # Setup, running, troubleshooting
+│   └── references/
+│       └── 001-architecture-and-design.md # Architecture & design decisions
 │
 ├── results/                    # Published results (in git)
 │   ├── RESULTS.md              # Results summary & analysis
@@ -120,7 +122,7 @@ Key settings in `src/config.py`:
 | `MIN_TEXT_THRESHOLD` | 50 | Min chars per page to classify as "text" |
 | `MODEL_ID` | `gemini-3.1-flash-lite-preview` | Gemini model for OCR |
 
-See [docs/HOW-TO.md](docs/HOW-TO.md) for the full configuration reference and usage guide.
+See [docs/guides/001-setup-and-usage.md](docs/guides/001-setup-and-usage.md) for the full configuration reference and usage guide.
 
 ## Results (March 2026 Run)
 
@@ -141,5 +143,5 @@ See [results/RESULTS.md](results/RESULTS.md) for the full analysis and all CSV d
 ## Documentation
 
 - [results/RESULTS.md](results/RESULTS.md) — Full results, statistics, and CSV file descriptions
-- [docs/HOW-TO.md](docs/HOW-TO.md) — Practical guide: setup, running, adding new data, troubleshooting
-- [docs/PLAN.md](docs/PLAN.md) — Architecture, design decisions, cost estimates
+- [docs/guides/001-setup-and-usage.md](docs/guides/001-setup-and-usage.md) — Setup, running, adding new data, troubleshooting
+- [docs/references/001-architecture-and-design.md](docs/references/001-architecture-and-design.md) — Architecture, design decisions, cost estimates
