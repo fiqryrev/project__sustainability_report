@@ -22,11 +22,16 @@ Automated pipeline that extracts text from PDF annual reports and counts occurre
 │   ├── pipeline.py             # Main orchestrator (parallel, resumable)
 │   └── batch_ocr.py            # Batch OCR via Gemini Batch Prediction API
 │
-├── docs/                       # Planning & documentation
+├── docs/                       # Documentation
 │   ├── PLAN.md                 # Architecture & design decisions
-│   ├── STEPS.md                # Step-by-step build instructions
-│   ├── command.md              # Original requirements
 │   └── HOW-TO.md               # Practical usage guide
+│
+├── results/                    # Published results (in git)
+│   ├── RESULTS.md              # Results summary & analysis
+│   ├── wordcount_results.csv   # Main output: word counts per file × term
+│   ├── process_summary.csv     # Processing metadata per file
+│   ├── token_usage.csv         # Gemini API token usage tracking
+│   └── page_diagnostics.csv    # Per-page extraction diagnostics
 │
 ├── my_file.ipynb               # Main Jupyter notebook (run pipeline + analysis)
 ├── dt_kam_wordcount.csv        # Dictionary: 101 terms across 4 dimensions
@@ -35,14 +40,7 @@ Automated pipeline that extracts text from PDF annual reports and counts occurre
 │
 ├── data_ar_kam/                # PDF files (not in git — see Setup)
 ├── service_account/            # GCP credentials (not in git — see Setup)
-├── output/                     # Generated results (not in git)
-│   ├── wordcount_results.csv   # Main output: word counts per file × term
-│   ├── process_summary.csv     # Processing metadata per file
-│   ├── token_usage.csv         # Gemini API token usage tracking
-│   ├── page_diagnostics.csv    # Per-page extraction diagnostics
-│   ├── extracted_text/         # Extracted text as .txt files
-│   ├── processed_files.json    # Checkpoint ledger for resume
-│   └── intermediate/           # Per-batch intermediate results
+├── output/                     # Working output dir (not in git)
 └── logs/                       # Runtime logs (not in git)
 ```
 
@@ -124,15 +122,24 @@ Key settings in `src/config.py`:
 
 See [docs/HOW-TO.md](docs/HOW-TO.md) for the full configuration reference and usage guide.
 
-## Results (First Full Run)
+## Results (March 2026 Run)
 
-- **2,318 / 2,322 PDFs** processed successfully (4 failed)
-- **234,118 word count rows** generated
-- **1,750 non-zero matches** (0.7%) — most common: "information" (4,980), "information management" (338)
-- **Gemini OCR cost**: ~$1 for the entire run
+| Metric | Value |
+|---|---|
+| PDFs processed | 2,318 / 2,322 (99.8% success) |
+| Companies covered | 898 |
+| Years | 2022, 2023, 2024 |
+| Word count rows | 234,118 |
+| Non-zero matches | 1,750 (0.7%) |
+| Pages extracted | 4,699 (62% OCR, 38% text) |
+| Gemini OCR cost | ~$1.00 |
+
+Top matched terms: "information" (4,980), "information management" (338), "communication" (91), "integrated" (49).
+
+See [results/RESULTS.md](results/RESULTS.md) for the full analysis and all CSV downloads.
 
 ## Documentation
 
+- [results/RESULTS.md](results/RESULTS.md) — Full results, statistics, and CSV file descriptions
 - [docs/HOW-TO.md](docs/HOW-TO.md) — Practical guide: setup, running, adding new data, troubleshooting
 - [docs/PLAN.md](docs/PLAN.md) — Architecture, design decisions, cost estimates
-- [docs/STEPS.md](docs/STEPS.md) — Step-by-step build instructions
