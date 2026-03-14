@@ -116,7 +116,7 @@ print('All OK!' if all([
 ### Option A: Jupyter Notebook (Recommended)
 
 ```bash
-jupyter notebook my_file.ipynb
+jupyter notebook pipeline_notebook.ipynb
 ```
 
 Run cells 1–8 in order. The notebook provides:
@@ -235,7 +235,7 @@ After processing the first batch (e.g., 500 files), you can continue with more f
 
 ### Via Notebook
 
-Scroll to the **"Continue Processing — Batch 2"** section in `my_file.ipynb`:
+Scroll to the **"Continue Processing — Batch 2"** section in `pipeline_notebook.ipynb`:
 
 1. Set `NEXT_MAX_FILES`:
    - `1000` → process up to file #1000 (next 500)

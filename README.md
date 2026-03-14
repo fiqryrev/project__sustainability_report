@@ -29,13 +29,13 @@ Automated pipeline that extracts text from PDF annual reports and counts occurre
 │       └── 001-architecture-and-design.md # Architecture & design decisions
 │
 ├── results/                    # Published results (in git)
-│   ├── RESULTS.md              # Results summary & analysis
+│   ├── 001-march-2026-run.md   # Results summary & analysis
 │   ├── wordcount_results.csv   # Main output: word counts per file × term
 │   ├── process_summary.csv     # Processing metadata per file
 │   ├── token_usage.csv         # Gemini API token usage tracking
 │   └── page_diagnostics.csv    # Per-page extraction diagnostics
 │
-├── my_file.ipynb               # Main Jupyter notebook (run pipeline + analysis)
+├── pipeline_notebook.ipynb     # Main Jupyter notebook (run pipeline + analysis)
 ├── dt_kam_wordcount.csv        # Dictionary: 101 terms across 4 dimensions
 ├── requirements.txt            # Python dependencies
 ├── .gitignore
@@ -57,11 +57,11 @@ Automated pipeline that extracts text from PDF annual reports and counts occurre
 
 ```bash
 # 1. Clone and install dependencies
-git clone <repo-url>
-cd 2026-03
+git clone https://github.com/fiqryrev/project__sustainability_report.git
+cd project__sustainability_report
 pip install -r requirements.txt
 
-# 2. Set up credentials (see docs/HOW-TO.md for details)
+# 2. Set up credentials (see docs/guides/001-setup-and-usage.md for details)
 mkdir -p service_account
 cp /path/to/your-service-account.json service_account/sa-vertex-fiqryrev.json
 
@@ -74,7 +74,7 @@ python -c "from src.pipeline import run_pipeline; run_pipeline()"
 
 Or use the Jupyter notebook:
 ```bash
-jupyter notebook my_file.ipynb
+jupyter notebook pipeline_notebook.ipynb
 ```
 
 ## Dictionary
@@ -138,10 +138,10 @@ See [docs/guides/001-setup-and-usage.md](docs/guides/001-setup-and-usage.md) for
 
 Top matched terms: "information" (4,980), "information management" (338), "communication" (91), "integrated" (49).
 
-See [results/RESULTS.md](results/RESULTS.md) for the full analysis and all CSV downloads.
+See [results/001-march-2026-run.md](results/001-march-2026-run.md) for the full analysis and all CSV downloads.
 
 ## Documentation
 
-- [results/RESULTS.md](results/RESULTS.md) — Full results, statistics, and CSV file descriptions
+- [results/001-march-2026-run.md](results/001-march-2026-run.md) — Full results, statistics, and CSV file descriptions
 - [docs/guides/001-setup-and-usage.md](docs/guides/001-setup-and-usage.md) — Setup, running, adding new data, troubleshooting
 - [docs/references/001-architecture-and-design.md](docs/references/001-architecture-and-design.md) — Architecture, design decisions, cost estimates

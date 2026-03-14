@@ -4,7 +4,7 @@
 
 ```
 2026-03/
-├── my_file.ipynb                    # Main orchestration notebook
+├── pipeline_notebook.ipynb                    # Main orchestration notebook
 ├── command.md                       # Original requirements
 ├── PLAN.md                          # This file
 ├── dt_kam_wordcount.csv             # Dictionary (102 entries, 2 columns)
@@ -167,7 +167,7 @@ Returns:
 
 ---
 
-## 3. `my_file.ipynb` — Notebook Structure
+## 3. `pipeline_notebook.ipynb` — Notebook Structure
 
 | Cell # | Section | Content |
 |---|---|---|
@@ -316,7 +316,7 @@ Checks to perform:
 | 6 | Write `src/text_counter.py` | - |
 | 7 | Write `src/pdf_extractor.py` | config, logger, Gemini client |
 | 8 | Write `src/pipeline.py` | all src modules |
-| 9 | Write `my_file.ipynb` | all src modules |
+| 9 | Write `pipeline_notebook.ipynb` | all src modules |
 | 10 | Test with 1-2 PDFs | all |
 | 11 | Run first 500 PDFs | all |
 
@@ -737,7 +737,7 @@ OCR_MODE = "realtime"  # Options: "realtime" or "batch"
 | 7 | Write `src/pdf_extractor.py` (incl. smart routing, page diagnostics, context caching) | config, logger |
 | 8 | Write `src/pipeline.py` (incl. parallel processing, resume logic) | all src modules |
 | 9 | Write `src/batch_ocr.py` (batch prediction support) | config, logger |
-| 10 | Write `my_file.ipynb` (incl. diagnostics analysis cell) | all src modules |
+| 10 | Write `pipeline_notebook.ipynb` (incl. diagnostics analysis cell) | all src modules |
 | 11 | Test with 1-2 PDFs (realtime mode) | all |
 | 12 | Run first 500 PDFs | all |
 | 13 | Analyze token usage & page diagnostics | step 12 output |
