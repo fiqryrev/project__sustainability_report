@@ -14,7 +14,6 @@ DICTIONARY_PATH: Path = Path("dt_kam_wordcount.csv")
 OUTPUT_DIR: Path = Path("output/")
 INTERMEDIATE_DIR: Path = Path("output/intermediate/")
 LOG_DIR: Path = Path("logs/")
-LEDGER_PATH: Path = Path("output/processed_files.json")
 PAGE_DIAGNOSTICS_PATH: Path = Path("output/page_diagnostics.csv")
 TOKEN_USAGE_PATH: Path = Path("output/token_usage.csv")
 EXTRACTED_TEXT_DIR: Path = Path("output/extracted_text/")
@@ -39,6 +38,11 @@ OCR_SYSTEM_PROMPT: str = (
     "Return only the raw extracted text. Preserve paragraph structure. No commentary."
 )
 GCS_BUCKET_URI: str = ""  # For batch mode; empty = not configured
+
+# --- Results settings ---
+RESULTS_DIR: Path = Path("results/")
+LARGE_DOC_THRESHOLD: int = 20  # Pages; for OCR Mode 2 (full_gemini_notes)
+RUN_PROGRESS_PATH: Path = Path("output/run_progress.json")
 
 # --- Pricing constants (Gemini 3.1 Flash Lite — standard) ---
 PRICE_INPUT_PER_M: float = 0.25

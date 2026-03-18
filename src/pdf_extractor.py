@@ -202,7 +202,8 @@ def extract_pdf_text(
     emiten_code: str,
     year: int,
     force_ocr: bool = False,
-) -> tuple[str, list[PageDiagnostic], list[dict]]:
+    pymupdf_only: bool = False,
+) -> tuple[str, str, list[PageDiagnostic], list[dict]]:
     """Extract text from all pages of a PDF.
 
     Uses PyMuPDF for text pages and Gemini OCR for image/scanned pages.
@@ -210,15 +211,19 @@ def extract_pdf_text(
 
     Args:
         pdf_path: Path to the PDF file.
-        client: google.genai.Client instance.
+        client: google.genai.Client instance (can be None if pymupdf_only=True).
         emiten_code: Company code for diagnostics.
         year: Report year for diagnostics.
         force_ocr: If True, use Gemini OCR for ALL pages regardless of
             classification. Useful for re-processing files where PyMuPDF
             produced incomplete text on mixed-content pages.
+        pymupdf_only: If True, use PyMuPDF for ALL pages, skip all OCR.
+            No API calls are made; client can be None.
 
     Returns:
-        Tuple of (full_text, page_diagnostics, token_usage_records).
+        Tuple of (full_text, pymupdf_text, page_diagnostics, token_usage_records).
+        full_text: Final combined text (OCR where applicable, PyMuPDF elsewhere).
+        pymupdf_text: Raw PyMuPDF-only text for all pages (always collected).
     """
     from pathlib import Path
     pdf_path = Path(pdf_path)
@@ -227,7 +232,7 @@ def extract_pdf_text(
     file_name = pdf_path.name
     total_pages = len(doc)
 
-    logger.debug("Processing %s (%d pages, force_ocr=%s)", file_name, total_pages, force_ocr)
+    logger.debug("Processing %s (%d pages, force_ocr=%s, pymupdf_only=%s)", file_name, total_pages, force_ocr, pymupdf_only)
 
     # First pass: classify all pages to decide on caching
     page_classifications = []
@@ -241,14 +246,15 @@ def extract_pdf_text(
     else:
         ocr_page_count = sum(1 for c, _, _ in page_classifications if c == "image")
 
-    # Create cache if many OCR pages
+    # Create cache if many OCR pages (skip if pymupdf_only)
     cached_content = None
-    if ocr_page_count >= CONTEXT_CACHE_MIN_PAGES:
+    if not pymupdf_only and ocr_page_count >= CONTEXT_CACHE_MIN_PAGES:
         logger.info("%s has %d OCR pages, creating OCR cache", file_name, ocr_page_count)
         cached_content = create_ocr_cache(client)
 
     # Second pass: extract text
     all_text_parts = []
+    all_raw_parts = []  # PyMuPDF-only text (always collected)
     page_diagnostics = []
     token_records = []
 
@@ -273,7 +279,7 @@ def extract_pdf_text(
             diag.raw_text_length = len(raw_text)
 
             # Decide whether to OCR this page
-            should_ocr = force_ocr or classification == "image"
+            should_ocr = not pymupdf_only and (force_ocr or classification == "image")
 
             try:
                 if should_ocr:
@@ -306,6 +312,7 @@ def extract_pdf_text(
             diag.processing_time_ms = int((time.time() - page_start) * 1000)
 
             all_text_parts.append(final_text)
+            all_raw_parts.append(raw_text)
             page_diagnostics.append(diag)
 
     finally:
@@ -313,4 +320,5 @@ def extract_pdf_text(
         doc.close()
 
     full_text = "\n".join(all_text_parts)
-    return full_text, page_diagnostics, token_records
+    pymupdf_text = "\n".join(all_raw_parts)
+    return full_text, pymupdf_text, page_diagnostics, token_records

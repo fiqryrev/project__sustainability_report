@@ -15,20 +15,31 @@ from src.logger import get_logger
 logger = get_logger("text_export")
 
 
-def save_extracted_text(text: str, pdf_name: str, output_dir: Path = EXTRACTED_TEXT_DIR) -> Path:
+def save_extracted_text(
+    text: str,
+    pdf_name: str,
+    output_dir: Path = EXTRACTED_TEXT_DIR,
+    suffix: str = "",
+) -> Path:
     """Save extracted text to a .txt file.
 
     Args:
         text: The full extracted text content.
         pdf_name: Original PDF filename (e.g. 'AADI_2024.pdf').
         output_dir: Directory to save .txt files.
+        suffix: Optional suffix for the filename (e.g. 'pymupdf' or 'ocr').
+            Result: AADI_2024_pymupdf_text.txt or AADI_2024_ocr_text.txt.
+            If empty, defaults to AADI_2024_text.txt.
 
     Returns:
         Path to the saved .txt file.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = Path(pdf_name).stem  # AADI_2024
-    txt_path = output_dir / f"{stem}_text.txt"
+    if suffix:
+        txt_path = output_dir / f"{stem}_{suffix}_text.txt"
+    else:
+        txt_path = output_dir / f"{stem}_text.txt"
     txt_path.write_text(text, encoding="utf-8")
     return txt_path
 
@@ -137,8 +148,9 @@ def batch_export_with_ocr(
             continue
         try:
             emiten_code, year = parse_filename(pdf_path)
-            full_text, _, _ = extract_pdf_text(pdf_path, client, emiten_code, year)
-            save_extracted_text(full_text, pdf_path.name, output_dir)
+            full_text, pymupdf_text, _, _ = extract_pdf_text(pdf_path, client, emiten_code, year)
+            save_extracted_text(pymupdf_text, pdf_path.name, output_dir, suffix="pymupdf")
+            save_extracted_text(full_text, pdf_path.name, output_dir, suffix="ocr")
             exported += 1
         except Exception as e:
             logger.warning("Failed to export text from %s: %s", pdf_path.name, e)

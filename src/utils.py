@@ -1,8 +1,5 @@
-"""Utility functions: file discovery, filename parsing, dictionary loading, ledger management."""
+"""Utility functions: file discovery, filename parsing, dictionary loading."""
 
-import json
-import threading
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -11,10 +8,10 @@ from src.config import (
     DICTIONARY_PATH,
     EXTRACTED_TEXT_DIR,
     INTERMEDIATE_DIR,
-    LEDGER_PATH,
     LOG_DIR,
     OUTPUT_DIR,
     PDF_DIR,
+    RESULTS_DIR,
 )
 from src.logger import get_logger
 
@@ -22,8 +19,8 @@ logger = get_logger("utils")
 
 
 def ensure_dirs() -> None:
-    """Create output, intermediate, and log directories if they don't exist."""
-    for d in (OUTPUT_DIR, INTERMEDIATE_DIR, LOG_DIR, EXTRACTED_TEXT_DIR):
+    """Create output, intermediate, log, and results directories if they don't exist."""
+    for d in (OUTPUT_DIR, INTERMEDIATE_DIR, LOG_DIR, EXTRACTED_TEXT_DIR, RESULTS_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 
@@ -99,58 +96,3 @@ def save_results(df: pd.DataFrame, path: Path) -> None:
     logger.info("Saved %d rows to %s", len(df), path)
 
 
-def load_ledger() -> dict:
-    """Load the processed files ledger from JSON.
-
-    Returns:
-        Dict mapping filename -> {status, timestamp, batch_id}.
-    """
-    if LEDGER_PATH.exists():
-        return json.loads(LEDGER_PATH.read_text())
-    return {}
-
-
-def update_ledger(
-    ledger: dict,
-    file_name: str,
-    status: str,
-    batch_id: int,
-    lock: threading.Lock | None = None,
-) -> None:
-    """Add/update a ledger entry and write to disk immediately.
-
-    Args:
-        ledger: The ledger dict (mutated in place).
-        file_name: PDF filename.
-        status: Processing status (success/failed/partial_success).
-        batch_id: Batch number.
-        lock: Optional threading lock for thread safety.
-    """
-    entry = {
-        "status": status,
-        "timestamp": datetime.now().isoformat(),
-        "batch_id": batch_id,
-    }
-    if lock:
-        with lock:
-            ledger[file_name] = entry
-            LEDGER_PATH.write_text(json.dumps(ledger, indent=2))
-    else:
-        ledger[file_name] = entry
-        LEDGER_PATH.write_text(json.dumps(ledger, indent=2))
-
-
-def get_pending_files(all_files: list[Path], ledger: dict) -> list[Path]:
-    """Return files not yet successfully processed.
-
-    Args:
-        all_files: Full list of PDF paths.
-        ledger: Current ledger dict.
-
-    Returns:
-        List of paths for files that need processing.
-    """
-    return [
-        f for f in all_files
-        if f.name not in ledger or ledger[f.name].get("status") != "success"
-    ]
