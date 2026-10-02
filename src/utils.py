@@ -1,5 +1,6 @@
 """Utility functions: file discovery, filename parsing, dictionary loading."""
 
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -16,6 +17,9 @@ from src.config import (
 from src.logger import get_logger
 
 logger = get_logger("utils")
+
+# Company code + "_" (or "-") + 4-digit year, e.g. AALI_2025 or BAPA-2025.
+_FILENAME_PATTERN = re.compile(r"^(?P<code>.+?)[_-](?P<year>\d{4})$")
 
 
 def ensure_dirs() -> None:
@@ -45,6 +49,8 @@ def discover_pdf_files(pdf_dir: Path = PDF_DIR, max_files: int | None = None) ->
 def parse_filename(pdf_path: Path) -> tuple[str, int]:
     """Extract (emiten_code, year) from filename pattern XXXX_YYYY.pdf.
 
+    A hyphen separator (XXXX-YYYY.pdf) is also accepted.
+
     Args:
         pdf_path: Path to a PDF file.
 
@@ -54,16 +60,10 @@ def parse_filename(pdf_path: Path) -> tuple[str, int]:
     Raises:
         ValueError: If filename doesn't match expected pattern.
     """
-    stem = pdf_path.stem  # e.g. "AALI_2023"
-    parts = stem.rsplit("_", 1)
-    if len(parts) != 2:
+    match = _FILENAME_PATTERN.match(pdf_path.stem)
+    if not match:
         raise ValueError(f"Filename '{pdf_path.name}' doesn't match XXXX_YYYY.pdf pattern")
-    code, year_str = parts
-    try:
-        year = int(year_str)
-    except ValueError:
-        raise ValueError(f"Cannot parse year from filename '{pdf_path.name}'")
-    return code, year
+    return match.group("code"), int(match.group("year"))
 
 
 def load_dictionary(csv_path: Path = DICTIONARY_PATH) -> pd.DataFrame:

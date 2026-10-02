@@ -7,7 +7,7 @@ already-processed PDFs without re-running the full pipeline.
 
 from pathlib import Path
 
-import fitz  # PyMuPDF
+import pymupdf
 
 from src.config import EXTRACTED_TEXT_DIR, PDF_DIR
 from src.logger import get_logger
@@ -57,7 +57,7 @@ def export_text_from_pdf(pdf_path: Path, output_dir: Path = EXTRACTED_TEXT_DIR) 
     Returns:
         Path to the saved .txt file.
     """
-    doc = fitz.open(pdf_path)
+    doc = pymupdf.open(pdf_path)
     pages_text = []
     for page_num in range(len(doc)):
         page = doc[page_num]
@@ -117,17 +117,17 @@ def batch_export_with_ocr(
     skip_existing: bool = True,
     client=None,
 ) -> int:
-    """Export extracted text using the full pipeline extraction (PyMuPDF + Gemini OCR).
+    """Export extracted text using the full pipeline extraction (PyMuPDF + LLM OCR).
 
     This uses the same extraction logic as the pipeline, so OCR pages
-    will have Gemini-extracted text. Requires a Gemini client.
+    will have LLM-extracted text. Requires an OpenRouter client.
 
     Args:
         pdf_dir: Directory containing PDF files.
         output_dir: Directory to save .txt files.
         max_files: Max number of PDFs to process. None = all.
         skip_existing: Skip PDFs that already have a .txt file.
-        client: google.genai.Client instance (required for OCR pages).
+        client: OpenRouter client from src.llm_client.init_llm_client() (required for OCR pages).
 
     Returns:
         Number of files exported.

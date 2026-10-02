@@ -2,7 +2,7 @@
 
 Source of truth: the latest results/00x-*/wordcount_results.csv.
 Determines which (Emiten Code, Year) pairs have already been processed,
-then compares against data_ar_kam/*.pdf to find unprocessed files.
+then compares against PDF_DIR (data/*.pdf) to find unprocessed files.
 """
 
 import re

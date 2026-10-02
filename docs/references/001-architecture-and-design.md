@@ -1,5 +1,7 @@
 # Implementation Plan: NLP Word Count Pipeline for Sustainability Reports
 
+> **Historical design document (March 2026, runs 001–004).** OCR has since moved from Vertex AI Gemini to OpenRouter: the Gemini client, service account, context caching (§ on caching), and `batch_ocr.py` described below no longer exist, and PDFs now live in `data/`. For the current OCR layer see [002-openrouter-llm-ocr.md](002-openrouter-llm-ocr.md); for setup and configuration see [../guides/001-setup-and-usage.md](../guides/001-setup-and-usage.md). Page classification and phrase counting below are still accurate; the output CSVs gained a few columns (see guide §8).
+
 ## 1. Architecture Overview
 
 ```
