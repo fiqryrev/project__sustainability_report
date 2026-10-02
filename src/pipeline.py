@@ -1,10 +1,10 @@
 """Core pipeline orchestrator for NLP word count processing.
 
-Handles Gemini client initialization, single-file processing, parallel batch
-execution, results-based tracking, and auto-versioned result publishing.
+Handles single-file processing, parallel batch execution, results-based
+tracking, and auto-versioned result publishing. OCR goes through OpenRouter
+(see src/llm_client.py).
 """
 
-import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
@@ -16,22 +16,18 @@ from tqdm import tqdm
 
 from src.config import (
     BATCH_SIZE,
-    EXTRACTED_TEXT_DIR,
     INTERMEDIATE_DIR,
-    LOCATION,
-    MAX_FILES,
     MAX_WORKERS,
+    MODEL_ID,
     OUTPUT_DIR,
     PAGE_DIAGNOSTICS_PATH,
     PDF_DIR,
-    PRICE_INPUT_PER_M,
-    PRICE_OUTPUT_PER_M,
-    PROJECT_ID,
     RESULTS_DIR,
-    SERVICE_ACCOUNT_PATH,
     TOKEN_USAGE_PATH,
 )
+from src.checkpoint import clear_checkpoints, load_checkpoints, save_checkpoint
 from src.diff_report import generate_diff_report
+from src.llm_client import init_llm_client
 from src.logger import get_logger, setup_logger
 from src.ocr_modes import OcrMode, resolve_ocr_strategy
 from src.pdf_extractor import extract_pdf_text
@@ -56,23 +52,6 @@ from src.utils import (
 logger = get_logger("pipeline")
 
 
-def init_gemini_client():
-    """Authenticate with service account and create a Gemini client.
-
-    Returns:
-        google.genai.Client configured for Vertex AI.
-    """
-    from google import genai
-
-    sa_path = str(SERVICE_ACCOUNT_PATH.resolve())
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = sa_path
-    logger.info("Set GOOGLE_APPLICATION_CREDENTIALS to %s", sa_path)
-
-    client = genai.Client(vertexai=True, project=PROJECT_ID, location=LOCATION)
-    logger.info("Gemini client initialized (project=%s, location=%s)", PROJECT_ID, LOCATION)
-    return client
-
-
 def process_single_file(
     pdf_path: Path,
     dictionary_df: pd.DataFrame,
@@ -84,7 +63,7 @@ def process_single_file(
     Args:
         pdf_path: Path to the PDF file.
         dictionary_df: Wordlist dictionary DataFrame.
-        client: Gemini client instance (can be None if pymupdf_only).
+        client: OpenRouter client (can be None if pymupdf_only).
         ocr_mode: OCR extraction mode.
 
     Returns:
@@ -115,7 +94,7 @@ def process_single_file(
         # Always save PyMuPDF raw text
         save_extracted_text(pymupdf_text, file_name, suffix="pymupdf")
         # Save OCR/final text (only differs from PyMuPDF when OCR was used)
-        has_ocr = any(d.extraction_method == "gemini_ocr" for d in page_diagnostics)
+        has_ocr = any(d.extraction_method == "llm_ocr" for d in page_diagnostics)
         if has_ocr:
             save_extracted_text(full_text, file_name, suffix="ocr")
 
@@ -137,15 +116,13 @@ def process_single_file(
         total_pages = len(page_diagnostics)
         text_pages = sum(1 for d in page_diagnostics if d.classification == "text")
         image_pages = sum(1 for d in page_diagnostics if d.classification == "image")
-        ocr_pages = sum(1 for d in page_diagnostics if d.extraction_method == "gemini_ocr")
+        ocr_pages = sum(1 for d in page_diagnostics if d.extraction_method == "llm_ocr")
+        ocr_error_pages = sum(1 for d in page_diagnostics if d.error)
         direct_pages = sum(1 for d in page_diagnostics if d.extraction_method == "pymupdf")
         total_chars = sum(d.final_text_length for d in page_diagnostics)
         total_input_tokens = sum(d.ocr_input_tokens for d in page_diagnostics)
         total_output_tokens = sum(d.ocr_output_tokens for d in page_diagnostics)
-        ocr_cost = (
-            total_input_tokens / 1_000_000 * PRICE_INPUT_PER_M
-            + total_output_tokens / 1_000_000 * PRICE_OUTPUT_PER_M
-        )
+        ocr_cost = sum(d.ocr_cost_usd for d in page_diagnostics)
 
         summary = {
             "file_name": file_name,
@@ -157,19 +134,21 @@ def process_single_file(
             "text_pages": text_pages,
             "image_pages": image_pages,
             "ocr_pages": ocr_pages,
+            "ocr_error_pages": ocr_error_pages,
             "direct_extract_pages": direct_pages,
             "total_extracted_chars": total_chars,
             "ocr_input_tokens": total_input_tokens,
             "ocr_output_tokens": total_output_tokens,
             "ocr_estimated_cost_usd": round(ocr_cost, 8),
+            "ocr_model": MODEL_ID if ocr_pages else "",
             "processing_time_seconds": round(time.time() - start_time, 2),
             "timestamp_processed": datetime.now().isoformat(),
             "note": note,
         }
 
         logger.info(
-            "Processed %s: %d pages (%d OCR), %d chars, %.4fs",
-            file_name, total_pages, ocr_pages, total_chars,
+            "Processed %s: %d pages (%d OCR, %d OCR errors), %d chars, %.1fs",
+            file_name, total_pages, ocr_pages, ocr_error_pages, total_chars,
             time.time() - start_time,
         )
 
@@ -199,15 +178,37 @@ def _build_failed_summary(
         "text_pages": 0,
         "image_pages": 0,
         "ocr_pages": 0,
+        "ocr_error_pages": 0,
         "direct_extract_pages": 0,
         "total_extracted_chars": 0,
         "ocr_input_tokens": 0,
         "ocr_output_tokens": 0,
         "ocr_estimated_cost_usd": 0.0,
+        "ocr_model": "",
         "processing_time_seconds": round(elapsed, 2),
         "timestamp_processed": datetime.now().isoformat(),
         "note": "",
     }
+
+
+def _process_and_checkpoint(
+    pdf_path: Path,
+    dictionary_df: pd.DataFrame,
+    client,
+    ocr_mode: OcrMode,
+) -> tuple[list[dict], dict, list[dict], list]:
+    """Process one PDF in a worker thread and checkpoint it immediately on success.
+
+    Checkpointing in the worker (not the main thread) means files still running
+    when the user presses Ctrl-C are saved as they finish.
+    """
+    wc_rows, summary, tokens, page_diags = process_single_file(pdf_path, dictionary_df, client, ocr_mode)
+    if summary.get("status") == "success":
+        try:
+            save_checkpoint(pdf_path, ocr_mode.value, wc_rows, summary, tokens, page_diags)
+        except OSError as e:
+            logger.warning("Could not checkpoint %s (it will be re-processed if interrupted): %s", pdf_path.name, e)
+    return wc_rows, summary, tokens, page_diags
 
 
 def process_batch_parallel(
@@ -224,7 +225,7 @@ def process_batch_parallel(
     Args:
         file_list: PDFs to process in this batch.
         dictionary_df: Wordlist dictionary.
-        client: Gemini client (thread-safe, can be None for pymupdf_only).
+        client: OpenRouter client (thread-safe, can be None for pymupdf_only).
         batch_id: Batch number for tracking.
         ocr_mode: OCR extraction mode.
         tracker: Optional progress tracker for per-file status updates.
@@ -240,32 +241,40 @@ def process_batch_parallel(
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_file = {
-            executor.submit(process_single_file, f, dictionary_df, client, ocr_mode): f
+            executor.submit(_process_and_checkpoint, f, dictionary_df, client, ocr_mode): f
             for f in file_list
         }
 
-        for future in as_completed(future_to_file):
-            pdf_path = future_to_file[future]
-            try:
-                wc_rows, summary, tokens, page_diags = future.result()
-                all_results.extend(wc_rows)
-                all_summaries.append(summary)
-                all_token_records.extend(tokens)
-                all_page_diagnostics.extend(page_diags)
+        try:
+            for future in as_completed(future_to_file):
+                pdf_path = future_to_file[future]
+                try:
+                    wc_rows, summary, tokens, page_diags = future.result()
+                    all_results.extend(wc_rows)
+                    all_summaries.append(summary)
+                    all_token_records.extend(tokens)
+                    all_page_diagnostics.extend(page_diags)
 
-                status = summary.get("status", "failed")
-                if tracker:
-                    tracker.update(pdf_path.name, status)
+                    status = summary.get("status", "failed")
+                    if tracker:
+                        tracker.update(pdf_path.name, status)
 
-            except Exception as e:
-                logger.error("Unexpected error for %s: %s", pdf_path.name, e)
-                failed_summary = _build_failed_summary(pdf_path.name, str(e), 0.0)
-                all_summaries.append(failed_summary)
-                if tracker:
-                    tracker.update(pdf_path.name, "failed")
+                except Exception as e:
+                    logger.error("Unexpected error for %s: %s", pdf_path.name, e)
+                    failed_summary = _build_failed_summary(pdf_path.name, str(e), 0.0)
+                    all_summaries.append(failed_summary)
+                    if tracker:
+                        tracker.update(pdf_path.name, "failed")
 
-            if pbar:
-                pbar.update(1)
+                if pbar:
+                    pbar.update(1)
+        except KeyboardInterrupt:
+            logger.warning(
+                "Interrupted — cancelling queued files; in-progress files will finish and be "
+                "checkpointed. Re-run the same command to resume."
+            )
+            executor.shutdown(wait=True, cancel_futures=True)
+            raise
 
     # Save intermediate results
     batch_label = f"batch_{batch_id:03d}"
@@ -296,7 +305,7 @@ def run_pipeline(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Run the incremental NLP word count pipeline.
 
-    Detects unprocessed PDFs by comparing data_ar_kam/ against the latest
+    Detects unprocessed PDFs by comparing PDF_DIR (data/) against the latest
     results/ folder, processes only new files, merges with previous results,
     and publishes to a new versioned results/ folder with a diff report.
 
@@ -346,46 +355,53 @@ def run_pipeline(
             return wc_df, sum_df
         return pd.DataFrame(), pd.DataFrame()
 
+    # Resume: restore files already finished by an interrupted run of this mode/model
+    restored = load_checkpoints(pending_files, ocr_mode.value)
+    files_to_process = [f for f in pending_files if f.name not in restored]
+    if restored:
+        logger.info("Resuming: %d files restored from checkpoints, %d left to process", len(restored), len(files_to_process))
+
     logger.info(
         "Processing %d unprocessed files (OCR mode: %s)",
-        len(pending_files), ocr_mode.value,
+        len(files_to_process), ocr_mode.value,
     )
 
-    # Init Gemini client (needed for hybrid and full_gemini modes)
-    # For full_gemini_notes, some files may need OCR, so init anyway
+    # Init OpenRouter client (needed for hybrid and full_llm modes).
+    # For full_llm_notes, skip it when every file is a large (PyMuPDF-only) doc.
     client = None
-    if ocr_mode != OcrMode.FULL_GEMINI_NOTES:
-        client = init_gemini_client()
+    if not files_to_process:
+        logger.info("Nothing left to process — publishing restored results")
+    elif ocr_mode != OcrMode.FULL_LLM_NOTES:
+        client = init_llm_client()
     else:
-        # Check if any files actually need OCR
         needs_ocr = any(
             resolve_ocr_strategy(f, ocr_mode)[0] != "pymupdf_only"
-            for f in pending_files
+            for f in files_to_process
         )
         if needs_ocr:
-            client = init_gemini_client()
+            client = init_llm_client()
         else:
-            logger.info("All files are large docs — skipping Gemini client init")
+            logger.info("All files are large docs — skipping OpenRouter client init")
 
     # Create progress tracker
     run_id = str(compute_next_folder_number(RESULTS_DIR))
-    tracker = ProgressTracker(total_files=len(pending_files), run_id=run_id)
+    tracker = ProgressTracker(total_files=len(files_to_process), run_id=run_id)
     tracker.start()
 
     # Split into batches
     batches = [
-        pending_files[i:i + batch_size]
-        for i in range(0, len(pending_files), batch_size)
+        files_to_process[i:i + batch_size]
+        for i in range(0, len(files_to_process), batch_size)
     ]
-    logger.info("Split %d files into %d batches (batch_size=%d)", len(pending_files), len(batches), batch_size)
+    logger.info("Split %d files into %d batches (batch_size=%d)", len(files_to_process), len(batches), batch_size)
 
-    # Process batches
-    all_results = []
-    all_summaries = []
-    all_token_records = []
-    all_page_diagnostics = []
+    # Process batches, starting from any checkpoint-restored results
+    all_results = [row for wc_rows, _, _, _ in restored.values() for row in wc_rows]
+    all_summaries = [summary for _, summary, _, _ in restored.values()]
+    all_token_records = [rec for _, _, tokens, _ in restored.values() for rec in tokens]
+    all_page_diagnostics = [d for _, _, _, diags in restored.values() for d in diags]
 
-    with tqdm(total=len(pending_files), desc="Processing PDFs", unit="file") as pbar:
+    with tqdm(total=len(files_to_process), desc="Processing PDFs", unit="file") as pbar:
         for batch_idx, batch_files in enumerate(batches, start=1):
             logger.info("Starting batch %d/%d (%d files)", batch_idx, len(batches), len(batch_files))
 
@@ -429,6 +445,9 @@ def run_pipeline(
     # Generate diff report
     generate_diff_report(previous_folder, target_folder, new_summary_df, new_token_df)
 
+    # Results are published; resume state is no longer needed
+    clear_checkpoints()
+
     # Log summary
     elapsed = time.time() - pipeline_start
     success_count = len(new_summary_df[new_summary_df["status"] == "success"]) if not new_summary_df.empty else 0
@@ -442,12 +461,10 @@ def run_pipeline(
     if not new_token_df.empty:
         total_input = new_token_df["prompt_tokens"].sum()
         total_output = new_token_df["output_tokens"].sum()
-        total_cost = (
-            total_input / 1_000_000 * PRICE_INPUT_PER_M
-            + total_output / 1_000_000 * PRICE_OUTPUT_PER_M
-        )
+        total_cost = new_token_df["cost_usd"].sum()
+        logger.info("  OCR model: %s", MODEL_ID)
         logger.info("  Total tokens: %d input, %d output", total_input, total_output)
-        logger.info("  Estimated cost: $%.6f", total_cost)
+        logger.info("  OCR cost: $%.4f", total_cost)
     logger.info("  Total time: %.1f seconds", elapsed)
     logger.info("=" * 60)
 

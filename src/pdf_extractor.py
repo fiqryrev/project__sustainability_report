@@ -1,29 +1,31 @@
-"""PDF text extraction using PyMuPDF (direct) and Gemini OCR (for scanned pages).
+"""PDF text extraction using PyMuPDF (direct) and LLM OCR via OpenRouter (for scanned pages).
 
-Implements 3-signal page classification, context caching for multi-OCR PDFs,
-and per-page diagnostics tracking.
+Implements 3-signal page classification and per-page diagnostics tracking.
 """
 
-import io
+import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from pathlib import Path
 
-import fitz  # PyMuPDF
-from PIL import Image
+import openai
+import pymupdf
 
 from src.config import (
-    API_DELAY_SECONDS,
-    API_MAX_RETRIES,
-    CONTEXT_CACHE_MIN_PAGES,
     IMAGE_COVERAGE_THRESHOLD,
     MIN_TEXT_THRESHOLD,
     MODEL_ID,
     OCR_IMAGE_DPI,
-    OCR_SYSTEM_PROMPT,
+    OCR_JPEG_QUALITY,
 )
+from src.llm_client import ocr_page_with_llm
 from src.logger import get_logger
 
 logger = get_logger("pdf_extractor")
+
+# PyMuPDF is not thread-safe ("may cause incorrect behaviour or even crash Python itself"):
+# every PyMuPDF call from worker threads must hold this lock. Network OCR calls run outside it.
+MUPDF_LOCK = threading.Lock()
 
 
 @dataclass
@@ -35,7 +37,7 @@ class PageDiagnostic:
     year: int
     page_number: int
     classification: str  # text / image / mixed
-    extraction_method: str  # pymupdf / gemini_ocr
+    extraction_method: str  # pymupdf / llm_ocr (gemini_ocr in runs 001-004)
     raw_text_length: int = 0
     ocr_text_length: int = 0
     final_text_length: int = 0
@@ -43,11 +45,12 @@ class PageDiagnostic:
     image_coverage_ratio: float = 0.0
     ocr_input_tokens: int = 0
     ocr_output_tokens: int = 0
+    ocr_cost_usd: float = 0.0
     processing_time_ms: int = 0
     error: str = ""
 
 
-def classify_page(page: fitz.Page) -> tuple[str, int, float]:
+def classify_page(page: pymupdf.Page) -> tuple[str, int, float]:
     """Classify a PDF page using 3-signal detection.
 
     Returns:
@@ -66,10 +69,12 @@ def classify_page(page: fitz.Page) -> tuple[str, int, float]:
         xref = img[0]
         try:
             img_rects = page.get_image_rects(xref)
-            for rect in img_rects:
-                total_image_area += rect.width * rect.height
-        except Exception:
-            pass
+        except (RuntimeError, ValueError) as e:
+            # Malformed image xrefs occur in some scanned PDFs; skip that image's area.
+            logger.debug("Cannot get rects for image xref %d on page %d: %s", xref, page.number + 1, e)
+            continue
+        for rect in img_rects:
+            total_image_area += rect.width * rect.height
 
     image_coverage = total_image_area / page_area if page_area > 0 else 0.0
 
@@ -88,116 +93,22 @@ def classify_page(page: fitz.Page) -> tuple[str, int, float]:
     return "text", image_count, image_coverage
 
 
-def render_page_to_image(page: fitz.Page, dpi: int = OCR_IMAGE_DPI) -> Image.Image:
-    """Render a PDF page to a PIL Image in-memory.
+def render_page_to_jpeg(page: pymupdf.Page, dpi: int = OCR_IMAGE_DPI) -> bytes:
+    """Render a PDF page to JPEG bytes in-memory (no temp files).
 
     Args:
         page: PyMuPDF page object.
         dpi: Resolution for rendering.
 
     Returns:
-        PIL Image of the rendered page.
+        JPEG-encoded page image.
     """
     pix = page.get_pixmap(dpi=dpi)
-    img_bytes = pix.tobytes("png")
-    return Image.open(io.BytesIO(img_bytes))
-
-
-def ocr_page_with_gemini(
-    page_image: Image.Image,
-    client,
-    cached_content=None,
-) -> tuple[str, dict]:
-    """Send a page image to Gemini for OCR text extraction.
-
-    Args:
-        page_image: PIL Image of the page.
-        client: google.genai.Client instance.
-        cached_content: Optional cached content name for system prompt caching.
-
-    Returns:
-        Tuple of (extracted_text, token_usage_dict).
-    """
-    from google.genai.types import GenerateContentConfig
-
-    config_kwargs = {}
-    if cached_content:
-        config_kwargs["cached_content"] = cached_content.name
-    else:
-        config_kwargs["system_instruction"] = OCR_SYSTEM_PROMPT
-
-    prompt_text = "Extract all text from this page."
-
-    last_error = None
-    for attempt in range(API_MAX_RETRIES):
-        try:
-            response = client.models.generate_content(
-                model=MODEL_ID,
-                contents=[page_image, prompt_text],
-                config=GenerateContentConfig(**config_kwargs),
-            )
-
-            token_usage = {
-                "prompt_tokens": getattr(response.usage_metadata, "prompt_token_count", 0) or 0,
-                "output_tokens": getattr(response.usage_metadata, "candidates_token_count", 0) or 0,
-                "total_tokens": getattr(response.usage_metadata, "total_token_count", 0) or 0,
-            }
-
-            extracted_text = response.text or ""
-
-            if API_DELAY_SECONDS > 0:
-                time.sleep(API_DELAY_SECONDS)
-
-            return extracted_text, token_usage
-
-        except Exception as e:
-            last_error = e
-            wait_time = 2 ** attempt
-            logger.warning(
-                "Gemini OCR attempt %d/%d failed: %s. Retrying in %ds...",
-                attempt + 1, API_MAX_RETRIES, str(e), wait_time,
-            )
-            time.sleep(wait_time)
-
-    raise RuntimeError(f"Gemini OCR failed after {API_MAX_RETRIES} retries: {last_error}")
-
-
-def create_ocr_cache(client):
-    """Create a context cache for the OCR system prompt.
-
-    Returns:
-        Cached content object, or None if caching is not supported.
-    """
-    from google.genai.types import CreateCachedContentConfig
-
-    try:
-        cached_content = client.caches.create(
-            model=MODEL_ID,
-            config=CreateCachedContentConfig(
-                system_instruction=OCR_SYSTEM_PROMPT,
-                ttl="300s",
-            ),
-        )
-        logger.info("Created OCR context cache: %s", cached_content.name)
-        return cached_content
-    except Exception as e:
-        logger.warning("Context caching not supported for %s: %s. Falling back to uncached.", MODEL_ID, e)
-        return None
-
-
-def cleanup_cache(client, cached_content) -> None:
-    """Delete a context cache. Ignores errors."""
-    if cached_content is None:
-        return
-    try:
-        client.caches.delete(name=cached_content.name)
-        logger.debug("Deleted OCR context cache: %s", cached_content.name)
-    except Exception:
-        pass
+    return pix.tobytes("jpeg", jpg_quality=OCR_JPEG_QUALITY)
 
 
 def extract_pdf_text(
-    pdf_path,
+    pdf_path: Path | str,
     client,
     emiten_code: str,
     year: int,
@@ -206,15 +117,19 @@ def extract_pdf_text(
 ) -> tuple[str, str, list[PageDiagnostic], list[dict]]:
     """Extract text from all pages of a PDF.
 
-    Uses PyMuPDF for text pages and Gemini OCR for image/scanned pages.
-    Creates a context cache if >= CONTEXT_CACHE_MIN_PAGES pages need OCR.
+    Uses PyMuPDF for text pages and LLM OCR (OpenRouter) for image/scanned pages.
+
+    A page whose OCR fails after retries (or is rejected as a bad request) falls
+    back to its PyMuPDF text and records the error in its diagnostic. Auth, credit,
+    and other fatal API errors propagate so the whole file is marked failed and is
+    retried on the next run.
 
     Args:
         pdf_path: Path to the PDF file.
-        client: google.genai.Client instance (can be None if pymupdf_only=True).
+        client: OpenAI SDK client for OpenRouter (can be None if pymupdf_only=True).
         emiten_code: Company code for diagnostics.
         year: Report year for diagnostics.
-        force_ocr: If True, use Gemini OCR for ALL pages regardless of
+        force_ocr: If True, use LLM OCR for ALL pages regardless of
             classification. Useful for re-processing files where PyMuPDF
             produced incomplete text on mixed-content pages.
         pymupdf_only: If True, use PyMuPDF for ALL pages, skip all OCR.
@@ -225,43 +140,32 @@ def extract_pdf_text(
         full_text: Final combined text (OCR where applicable, PyMuPDF elsewhere).
         pymupdf_text: Raw PyMuPDF-only text for all pages (always collected).
     """
-    from pathlib import Path
     pdf_path = Path(pdf_path)
-
-    doc = fitz.open(pdf_path)
     file_name = pdf_path.name
-    total_pages = len(doc)
 
-    logger.debug("Processing %s (%d pages, force_ocr=%s, pymupdf_only=%s)", file_name, total_pages, force_ocr, pymupdf_only)
-
-    # First pass: classify all pages to decide on caching
-    page_classifications = []
-    for page_num in range(total_pages):
-        page = doc[page_num]
-        classification, img_count, img_coverage = classify_page(page)
-        page_classifications.append((classification, img_count, img_coverage))
-
-    if force_ocr:
-        ocr_page_count = total_pages
-    else:
-        ocr_page_count = sum(1 for c, _, _ in page_classifications if c == "image")
-
-    # Create cache if many OCR pages (skip if pymupdf_only)
-    cached_content = None
-    if not pymupdf_only and ocr_page_count >= CONTEXT_CACHE_MIN_PAGES:
-        logger.info("%s has %d OCR pages, creating OCR cache", file_name, ocr_page_count)
-        cached_content = create_ocr_cache(client)
-
-    # Second pass: extract text
     all_text_parts = []
     all_raw_parts = []  # PyMuPDF-only text (always collected)
     page_diagnostics = []
     token_records = []
 
+    with MUPDF_LOCK:
+        doc = pymupdf.open(pdf_path)
+        total_pages = len(doc)
+    logger.debug(
+        "Processing %s (%d pages, force_ocr=%s, pymupdf_only=%s)",
+        file_name, total_pages, force_ocr, pymupdf_only,
+    )
+
     try:
         for page_num in range(total_pages):
-            page = doc[page_num]
-            classification, img_count, img_coverage = page_classifications[page_num]
+            # All PyMuPDF work for this page happens under the lock, including dropping the page.
+            with MUPDF_LOCK:
+                page = doc[page_num]
+                classification, img_count, img_coverage = classify_page(page)
+                raw_text = page.get_text().strip()
+                should_ocr = not pymupdf_only and (force_ocr or classification == "image")
+                page_image = render_page_to_jpeg(page) if should_ocr else None
+                del page
             page_start = time.time()
 
             diag = PageDiagnostic(
@@ -274,39 +178,28 @@ def extract_pdf_text(
                 image_count=img_count,
                 image_coverage_ratio=round(img_coverage, 4),
             )
-
-            raw_text = page.get_text().strip()
             diag.raw_text_length = len(raw_text)
+            final_text = raw_text
 
-            # Decide whether to OCR this page
-            should_ocr = not pymupdf_only and (force_ocr or classification == "image")
-
-            try:
-                if should_ocr:
-                    # OCR this page
-                    diag.extraction_method = "gemini_ocr"
-                    page_image = render_page_to_image(page)
-                    ocr_text, token_usage = ocr_page_with_gemini(page_image, client, cached_content)
+            if should_ocr:
+                diag.extraction_method = "llm_ocr"
+                try:
+                    ocr_text, token_usage = ocr_page_with_llm(page_image, client)
+                except (RuntimeError, openai.BadRequestError) as e:
+                    logger.error("OCR failed for page %d of %s, using PyMuPDF text: %s", page_num + 1, file_name, e)
+                    diag.error = str(e)
+                else:
+                    final_text = ocr_text
                     diag.ocr_text_length = len(ocr_text)
                     diag.ocr_input_tokens = token_usage["prompt_tokens"]
                     diag.ocr_output_tokens = token_usage["output_tokens"]
-
-                    final_text = ocr_text
+                    diag.ocr_cost_usd = token_usage["cost_usd"]
                     token_records.append({
                         "file_name": file_name,
                         "page_number": page_num + 1,
-                        "prompt_tokens": token_usage["prompt_tokens"],
-                        "output_tokens": token_usage["output_tokens"],
-                        "total_tokens": token_usage["total_tokens"],
+                        "model": MODEL_ID,
+                        **token_usage,
                     })
-                else:
-                    # Use PyMuPDF text directly
-                    final_text = raw_text
-
-            except Exception as e:
-                logger.error("Error extracting page %d of %s: %s", page_num + 1, file_name, e)
-                diag.error = str(e)
-                final_text = raw_text  # Fall back to whatever PyMuPDF got
 
             diag.final_text_length = len(final_text)
             diag.processing_time_ms = int((time.time() - page_start) * 1000)
@@ -314,10 +207,9 @@ def extract_pdf_text(
             all_text_parts.append(final_text)
             all_raw_parts.append(raw_text)
             page_diagnostics.append(diag)
-
     finally:
-        cleanup_cache(client, cached_content)
-        doc.close()
+        with MUPDF_LOCK:
+            doc.close()
 
     full_text = "\n".join(all_text_parts)
     pymupdf_text = "\n".join(all_raw_parts)

@@ -10,76 +10,66 @@ Practical guide for setting up, running, and extending the NLP Word Count Pipeli
 2. [Running the Pipeline](#2-running-the-pipeline)
 3. [Adding New PDF Files](#3-adding-new-pdf-files)
 4. [Changing the Dictionary](#4-changing-the-dictionary)
-5. [Continuing to the Next Batch](#5-continuing-to-the-next-batch)
+5. [Choosing the OCR Model](#5-choosing-the-ocr-model)
 6. [Inspecting Extracted Text](#6-inspecting-extracted-text)
-7. [Switching to Batch OCR Mode](#7-switching-to-batch-ocr-mode)
-8. [Configuration Reference](#8-configuration-reference)
-9. [Understanding the Output Files](#9-understanding-the-output-files)
-10. [Troubleshooting](#10-troubleshooting)
+7. [Configuration Reference](#7-configuration-reference)
+8. [Understanding the Output Files](#8-understanding-the-output-files)
+9. [Troubleshooting](#9-troubleshooting)
 
 ---
 
 ## 1. Initial Setup
 
-### 1.1 Install Python Dependencies
+### 1.1 Create a virtual environment and install dependencies
+
+Python 3.12 is recommended.
 
 ```bash
-pip install -r requirements.txt
+uv venv --python 3.12 .venv        # or: python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt    # or: uv pip install -r requirements.txt
 ```
 
 This installs:
 - `PyMuPDF` — PDF text extraction and page rendering
-- `google-genai` — Google Gemini API SDK for OCR
+- `openai` — OpenAI-compatible SDK, pointed at OpenRouter for LLM OCR
+- `python-dotenv` — Loads `OPENROUTER_API_KEY` from `.env`
 - `pandas` — Data manipulation
 - `tqdm` — Progress bars
-- `Pillow` — Image processing
 
-### 1.2 Set Up Google Cloud Service Account
+### 1.2 Set up the OpenRouter API key
 
-You need a GCP service account with **Vertex AI API** access.
+OCR for scanned pages goes through [OpenRouter](https://openrouter.ai/), which gives one API key for Claude, GPT, Gemini, and other vision models.
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Navigate to **IAM & Admin > Service Accounts**
-3. Create a service account (or use an existing one) with the **Vertex AI User** role
-4. Generate a JSON key and download it
-5. Place the JSON file in the project:
+1. Create a key at <https://openrouter.ai/keys> and add credits to the account
+2. Copy the template and paste your key:
 
 ```bash
-mkdir -p service_account
-cp /path/to/your-key.json service_account/sa-vertex-fiqryrev.json
+cp .env.example .env
+# edit .env → OPENROUTER_API_KEY=sk-or-v1-...
 ```
 
-> **Important:** The filename must match `SERVICE_ACCOUNT_PATH` in `src/config.py`. If your file has a different name, either rename it or update the config.
+`.env` is gitignored. Never commit it.
 
-### 1.3 Verify GCP Project Settings
+### 1.3 Place PDF files
 
-In `src/config.py`, confirm these match your GCP project:
-
-```python
-PROJECT_ID = "psychic-outcome-408306"    # Your GCP project ID
-LOCATION = "global"                       # API region
-MODEL_ID = "gemini-3.1-flash-lite-preview"  # Gemini model
-```
-
-### 1.4 Place PDF Files
-
-Put your PDF annual reports in the `data_ar_kam/` folder:
+Put your PDF annual reports in the `data/` folder (gitignored — PDFs are never committed):
 
 ```bash
-mkdir -p data_ar_kam
-cp /path/to/pdf-files/*.pdf data_ar_kam/
+mkdir -p data
+cp /path/to/pdf-files/*.pdf data/
 ```
 
-**Naming convention:** Files must follow the pattern `XXXX_YYYY.pdf` where:
+**Naming convention:** Files must follow the pattern `XXXX_YYYY.pdf` (a hyphen, `XXXX-YYYY.pdf`, is also accepted) where:
 - `XXXX` = company/emiten code (any length, letters and numbers)
 - `YYYY` = 4-digit year
-- Examples: `AALI_2024.pdf`, `BBNI_2022.pdf`, `BMRI_2023.pdf`
+- Examples: `AALI_2025.pdf`, `BBNI_2022.pdf`, `BAPA-2025.pdf`
 
-Files that don't match this pattern will fail with a parse error (logged but not fatal — other files continue processing).
+Files that don't match (e.g. `LABA_2023(1).pdf`) fail with a parse error — logged but not fatal; other files continue processing.
 
-### 1.5 Place the Dictionary CSV
+### 1.4 Place the dictionary CSV
 
-The dictionary file `dt_kam_wordcount.csv` should be in the project root. It must have exactly two columns:
+The dictionary file `dt_kam_wordcount.csv` lives in the project root. It must have exactly two columns:
 
 ```csv
 Dimensions,Wordlist
@@ -89,135 +79,94 @@ Smart manufacturing,artificial intelligence
 ...
 ```
 
-### 1.6 Verify Setup
-
-Run a quick check:
+### 1.5 Verify setup
 
 ```bash
-python -c "
-from src import config
-from pathlib import Path
-print('PDF dir exists:', config.PDF_DIR.exists())
-print('PDF count:', len(list(config.PDF_DIR.glob('*.pdf'))))
-print('Dictionary exists:', config.DICTIONARY_PATH.exists())
-print('Service account exists:', config.SERVICE_ACCOUNT_PATH.exists())
-print('All OK!' if all([
-    config.PDF_DIR.exists(),
-    config.DICTIONARY_PATH.exists(),
-    config.SERVICE_ACCOUNT_PATH.exists()
-]) else 'MISSING FILES — check above')
-"
+python scripts/run_pipeline.py --dry-run
 ```
+
+This prints the latest results folder, how many `(Emiten Code, Year)` pairs are already processed, how many PDFs in `data/` are pending, and the OCR model. It makes no API calls.
 
 ---
 
 ## 2. Running the Pipeline
 
-### Option A: Jupyter Notebook (Recommended)
+### Option A: Command line (recommended)
+
+```bash
+python scripts/run_pipeline.py                            # hybrid mode, all unprocessed files
+python scripts/run_pipeline.py --max-files 50 --batch-size 10
+python scripts/run_pipeline.py --ocr-mode full_llm        # LLM OCR for every page (expensive)
+python scripts/run_pipeline.py --ocr-mode full_llm_notes  # LLM for ≤20-page docs, PyMuPDF for larger
+python scripts/run_pipeline.py --label september-2026-full-reports
+```
+
+The old mode names `full_gemini` / `full_gemini_notes` are still accepted as aliases.
+
+A full run over ~900 annual reports takes several hours. On macOS, run it under `caffeinate -i` so the machine doesn't sleep:
+
+```bash
+caffeinate -i python scripts/run_pipeline.py
+```
+
+### Option B: Jupyter notebook
 
 ```bash
 jupyter notebook pipeline_notebook.ipynb
 ```
 
-Run cells 1–8 in order. The notebook provides:
-- Configuration preview and validation
-- Dictionary and PDF discovery inspection
-- Pipeline execution with progress bar
-- Results analysis, token usage, and diagnostics
+The notebook provides configuration validation, pending-file inspection, pipeline execution, results analysis, token usage/cost, and sanity checks.
 
-### Option B: Command Line
+### Option C: Python
 
 ```bash
-# Process with default settings (MAX_FILES=500, BATCH_SIZE=50)
 python -c "from src.pipeline import run_pipeline; run_pipeline()"
-
-# Process a specific number of files
-python -c "from src.pipeline import run_pipeline; run_pipeline(max_files=100, batch_size=25)"
-
-# Process ALL files
-python -c "from src.pipeline import run_pipeline; run_pipeline(max_files=None)"
-```
-
-### Option C: Test Run (2 files)
-
-```bash
 python -c "from src.pipeline import run_pipeline; run_pipeline(max_files=2, batch_size=2)"
 ```
 
-Check output files exist:
-```bash
-ls output/wordcount_results.csv output/process_summary.csv
-```
+> **Note:** every run that processes at least one file publishes a new `results/00x-*/` folder. A 2-file test run therefore creates a real results folder — delete it (it is not yet committed) if it was only a test.
 
 ---
 
 ## 3. Adding New PDF Files
 
-When you have new PDF annual reports to process:
-
-1. **Drop the new PDFs** into `data_ar_kam/`:
+1. **Drop the new PDFs** into `data/`.
+2. **Re-run the pipeline** — it compares `data/*.pdf` against the `(Emiten Code, Year)` pairs in the latest `results/00x-*/wordcount_results.csv` and processes only the new ones:
    ```bash
-   cp /path/to/new-pdfs/*.pdf data_ar_kam/
+   python scripts/run_pipeline.py
    ```
+3. **Check results** — the new `results/00x-*/` folder contains the cumulative CSVs (old + new) and a run report `00x-<month>-<year>-run.md` comparing against the previous run.
 
-2. **Re-run the pipeline** — it automatically skips already-processed files:
-   ```bash
-   python -c "from src.pipeline import run_pipeline; run_pipeline(max_files=None)"
-   ```
+### Interrupted runs (stop and resume)
 
-   The pipeline uses a **ledger** (`output/processed_files.json`) to track which files have been processed. Only new files (not in the ledger) will be processed.
+Every finished PDF is checkpointed immediately to `output/checkpoints/<stem>.json`. To stop a run, press **Ctrl-C once**: queued files are cancelled, files already in progress finish and are checkpointed, and the CLI prints `Stopped.` Then re-run **the same command** to resume — checkpointed files are restored (no OCR cost), only the rest are processed, and the results folder is published once everything is done. Checkpoints are deleted after publishing.
 
-3. **Check results** — the final CSVs are regenerated with all data (old + new):
-   ```bash
-   python -c "
-   import pandas as pd
-   df = pd.read_csv('output/wordcount_results.csv')
-   print(f'Total rows: {len(df)}')
-   print(f'Unique companies: {df[\"Emiten Code\"].nunique()}')
-   "
-   ```
+```bash
+python scripts/run_pipeline.py --dry-run   # shows "Resumable from checkpoints: N"
+python scripts/run_pipeline.py             # resumes
+```
 
-### Force re-processing a specific file
+Notes:
+- Waiting for in-progress files can take a few minutes for large scanned reports. If you kill the process hard (second Ctrl-C, closing the terminal, shutting down), only those in-progress files (at most `MAX_WORKERS`) are lost and redone.
+- A checkpoint is reused only if it was made with the same OCR mode and `MODEL_ID`; switching models reprocesses everything.
+- Laptop sleep just pauses the run, but OCR calls in flight during sleep/wake can exhaust their retries and fall back to PyMuPDF text (counted in `ocr_error_pages`). Prefer Ctrl-C + resume over sleeping mid-run.
 
-If you need to re-process a file (e.g., after replacing the PDF):
+### Failed files
+
+Failed files produce no word-count rows, so they count as unprocessed and are retried on the next run. To see why they failed:
 
 ```python
-import json
-from pathlib import Path
-
-# Remove the file from the ledger
-ledger = json.loads(Path("output/processed_files.json").read_text())
-del ledger["AALI_2024.pdf"]  # The filename to re-process
-Path("output/processed_files.json").write_text(json.dumps(ledger, indent=2))
-
-# Re-run the pipeline — it will pick up this file as "pending"
-from src.pipeline import run_pipeline
-run_pipeline(max_files=None)
+import pandas as pd
+from src.results_tracker import get_latest_results_folder
+df = pd.read_csv(get_latest_results_folder() / "process_summary.csv")
+print(df[df["status"] == "failed"][["file_name", "error_message"]])
 ```
 
 ---
 
 ## 4. Changing the Dictionary
 
-To modify the dictionary terms:
-
-1. **Edit `dt_kam_wordcount.csv`** — keep the same two-column format:
-   ```csv
-   Dimensions,Wordlist
-   Your Dimension Name,your search term
-   Your Dimension Name,another term
-   ```
-
-2. **Clear the ledger** to force re-processing all files with the new dictionary:
-   ```bash
-   rm output/processed_files.json
-   rm output/intermediate/batch_*
-   ```
-
-3. **Re-run the pipeline**:
-   ```bash
-   python -c "from src.pipeline import run_pipeline; run_pipeline(max_files=None)"
-   ```
+Edit `dt_kam_wordcount.csv`, keeping the two-column format. Note that incremental runs only count **new** PDFs — files already in the latest results are not recounted against a changed dictionary. Recounting everything requires a full re-run into a fresh results history.
 
 ### Notes on matching behavior
 
@@ -229,154 +178,112 @@ To modify the dictionary terms:
 
 ---
 
-## 5. Continuing to the Next Batch
+## 5. Choosing the OCR Model
 
-After processing the first batch (e.g., 500 files), you can continue with more files.
-
-### Via Notebook
-
-Scroll to the **"Continue Processing — Batch 2"** section in `pipeline_notebook.ipynb`:
-
-1. Set `NEXT_MAX_FILES`:
-   - `1000` → process up to file #1000 (next 500)
-   - `None` → process ALL remaining files
-2. Run the batch 2 cells
-
-### Via Command Line
+The model is set by `MODEL_ID` in `src/config.py` (default `google/gemini-2.5-flash-lite`). Override it per run without editing code:
 
 ```bash
-# Process next 500 (files 501–1000)
-python -c "from src.pipeline import run_pipeline; run_pipeline(max_files=1000)"
-
-# Process ALL remaining
-python -c "from src.pipeline import run_pipeline; run_pipeline(max_files=None)"
+OPENROUTER_MODEL=openai/gpt-5.5 python scripts/run_pipeline.py
 ```
 
-The pipeline loads the ledger, skips files marked as `success`, and only processes the remaining ones.
-
-### Check progress
+or set `OPENROUTER_MODEL` in `.env`. Any OpenRouter model that accepts image input works; list them with:
 
 ```bash
-python -c "
-import json
-from pathlib import Path
-ledger = json.loads(Path('output/processed_files.json').read_text())
-done = sum(1 for v in ledger.values() if v['status'] == 'success')
-total = len(list(Path('data_ar_kam').glob('*.pdf')))
-print(f'Processed: {done}/{total} ({total - done} remaining)')
-"
+curl -s https://openrouter.ai/api/v1/models | python -c "
+import json,sys
+for m in json.load(sys.stdin)['data']:
+    if 'image' in m['architecture']['input_modalities']: print(m['id'])"
 ```
+
+Actual per-call cost is reported by OpenRouter and stored in `token_usage.csv` (`cost_usd`). `PRICE_INPUT_PER_M` / `PRICE_OUTPUT_PER_M` are only a fallback estimate — update them if you switch models. See [../references/002-openrouter-llm-ocr.md](../references/002-openrouter-llm-ocr.md) for details.
 
 ---
 
 ## 6. Inspecting Extracted Text
 
-The pipeline saves extracted text as `.txt` files in `output/extracted_text/` (one per PDF).
+The pipeline saves extracted text in `output/extracted_text/`: `XXXX_YYYY_pymupdf_text.txt` for every PDF and `XXXX_YYYY_ocr_text.txt` when any page was OCR'd.
 
-### Export text from already-processed PDFs (no OCR cost)
+### Export text without OCR (no API cost)
 
 ```python
 from src.text_export import batch_export_texts
-
-# PyMuPDF-only extraction (fast, free, but won't capture scanned pages)
 batch_export_texts(max_files=500, skip_existing=True)
 ```
 
-### Export text with OCR (uses Gemini API)
+### Export text with OCR (uses OpenRouter)
 
 ```python
-from src.pipeline import init_gemini_client
+from src.llm_client import init_llm_client
 from src.text_export import batch_export_with_ocr
 
-client = init_gemini_client()
-batch_export_with_ocr(max_files=500, skip_existing=True, client=client)
-```
-
-### View a specific file's extracted text
-
-```bash
-cat output/extracted_text/AALI_2024_text.txt
+client = init_llm_client()
+batch_export_with_ocr(max_files=10, skip_existing=True, client=client)
 ```
 
 ---
 
-## 7. Switching to Batch OCR Mode
+## 7. Configuration Reference
 
-For large-scale processing, Gemini Batch Prediction API is ~50% cheaper.
+All settings are in `src/config.py`.
 
-### Requirements
-
-- A Google Cloud Storage (GCS) bucket
-- `google-cloud-storage` Python package: `pip install google-cloud-storage`
-
-### Setup
-
-In `src/config.py`:
-```python
-OCR_MODE = "batch"                    # Switch from "realtime" to "batch"
-GCS_BUCKET_URI = "gs://your-bucket"   # Your GCS bucket
-```
-
-> **Note:** Batch mode is currently a placeholder implementation. The pipeline defaults to `realtime` mode. See `src/batch_ocr.py` for the batch API integration structure.
-
----
-
-## 8. Configuration Reference
-
-All settings are in `src/config.py`:
-
-### Project Settings
+### LLM settings
 
 | Setting | Default | Description |
 |---|---|---|
-| `PROJECT_ID` | `psychic-outcome-408306` | GCP project ID |
-| `LOCATION` | `global` | Vertex AI API region |
-| `MODEL_ID` | `gemini-3.1-flash-lite-preview` | Gemini model for OCR |
-| `SERVICE_ACCOUNT_PATH` | `service_account/sa-vertex-fiqryrev.json` | Path to GCP credentials |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter OpenAI-compatible endpoint |
+| `OPENROUTER_API_KEY_ENV` | `OPENROUTER_API_KEY` | Env var holding the API key (loaded from `.env`) |
+| `MODEL_ID` | `google/gemini-2.5-flash-lite` | OCR model; override with `OPENROUTER_MODEL` env var |
+| `OCR_MAX_TOKENS` | `8192` | Max output tokens per OCR page |
+| `OCR_REASONING_EFFORT` | `none` | OpenRouter reasoning effort for OCR calls; `none` disables reasoning. Override with `OPENROUTER_REASONING_EFFORT` |
+| `API_TIMEOUT_SECONDS` | `180` | Per-request timeout |
 
-### Processing Settings
+### Processing settings
 
 | Setting | Default | Description |
 |---|---|---|
-| `MAX_FILES` | `500` | Max PDFs to process per `run_pipeline()` call |
 | `BATCH_SIZE` | `50` | Files per processing batch (intermediate save point) |
 | `MAX_WORKERS` | `4` | Parallel threads for concurrent processing |
-| `API_DELAY_SECONDS` | `0` | Delay between Gemini API calls (rate limiting) |
-| `API_MAX_RETRIES` | `3` | Max retries per failed API call (exponential backoff) |
+| `API_DELAY_SECONDS` | `0` | Delay after each OCR call (rate-limit safety valve) |
+| `API_MAX_RETRIES` | `3` | Attempts per OCR page for transient errors (exponential backoff) |
 
-### PDF Extraction Settings
+### PDF extraction settings
 
 | Setting | Default | Description |
 |---|---|---|
 | `MIN_TEXT_THRESHOLD` | `50` | Min chars per page to classify as "text" (below = "image") |
 | `IMAGE_COVERAGE_THRESHOLD` | `0.6` | Image area ratio threshold for page classification |
 | `OCR_IMAGE_DPI` | `200` | Resolution for rendering pages to images for OCR |
-| `CONTEXT_CACHE_MIN_PAGES` | `5` | Min OCR pages per PDF to enable context caching |
+| `OCR_JPEG_QUALITY` | `90` | JPEG quality for page images sent to the model |
+| `LARGE_DOC_THRESHOLD` | `20` | Page threshold for `full_llm_notes` mode |
+| `CHECKPOINT_DIR` | `output/checkpoints/` | Per-file resume state for interrupted runs |
 
-### Pricing (for cost estimation only)
+### Pricing (fallback cost estimate only)
 
 | Setting | Default | Description |
 |---|---|---|
-| `PRICE_INPUT_PER_M` | `0.25` | $ per 1M input tokens (standard) |
-| `PRICE_OUTPUT_PER_M` | `1.50` | $ per 1M output tokens (standard) |
+| `PRICE_INPUT_PER_M` | `0.10` | $ per 1M input tokens (Gemini 2.5 Flash Lite) |
+| `PRICE_OUTPUT_PER_M` | `0.40` | $ per 1M output tokens (Gemini 2.5 Flash Lite) |
 
 ---
 
-## 9. Understanding the Output Files
+## 8. Understanding the Output Files
 
-### `output/wordcount_results.csv` — Main Output
+Published results live in `results/00x-*/` (committed); working copies of the latest run live in `output/` (gitignored).
 
-One row per (company, year, dimension, term) combination:
+### `wordcount_results.csv` — Main output
+
+One row per (company, year, dimension, term):
 
 | Column | Example |
 |---|---|
 | `Emiten Code` | `AALI` |
-| `Year` | `2024` |
+| `Year` | `2025` |
 | `Dimensions` | `Digital technology applications` |
 | `Wordlist` | `data management` |
 | `Word count` | `3` |
+| `note` | `large_doc_pymupdf_only` (only in `full_llm_notes` mode) |
 
-### `output/process_summary.csv` — Processing Metadata
+### `process_summary.csv` — Processing metadata
 
 One row per PDF file:
 
@@ -386,82 +293,49 @@ One row per PDF file:
 | `status` | `success` / `failed` |
 | `total_pages` | Total pages in PDF |
 | `text_pages` / `image_pages` | Page classification counts |
-| `ocr_pages` | Pages sent to Gemini OCR |
+| `ocr_pages` | Pages sent to LLM OCR |
+| `ocr_error_pages` | OCR pages that fell back to PyMuPDF text after an error |
 | `total_extracted_chars` | Total characters extracted |
-| `ocr_estimated_cost_usd` | Estimated OCR cost for this file |
+| `ocr_estimated_cost_usd` | OCR cost for this file (OpenRouter-reported where available) |
+| `ocr_model` | OpenRouter model used for OCR (empty if no OCR) |
 | `processing_time_seconds` | Wall clock time |
 
-### `output/token_usage.csv` — Gemini API Usage
+### `token_usage.csv` — LLM API usage
 
-One row per OCR API call (per page):
+One row per OCR API call (per page): `file_name`, `page_number`, `model`, `prompt_tokens`, `output_tokens`, `total_tokens`, `reasoning_tokens`, `cost_usd`, `cost_source` (`openrouter` or `estimated`). Rows from runs 001–004 (Gemini) have only the token columns.
 
-| Column | Description |
-|---|---|
-| `file_name` | PDF filename |
-| `page_number` | Page that was OCR'd |
-| `prompt_tokens` | Input tokens |
-| `output_tokens` | Output tokens |
+### `page_diagnostics.csv` — Per-page detail
 
-### `output/extracted_text/` — Raw Text Files
-
-One `.txt` file per PDF containing the full extracted text. Useful for:
-- Verifying extraction quality
-- Debugging word count results
-- Manual inspection of specific reports
-
-### `output/processed_files.json` — Checkpoint Ledger
-
-Tracks which files have been processed. Enables resume on re-run.
+Classification, extraction method (`pymupdf` / `llm_ocr`; `gemini_ocr` in runs 001–004), text lengths, tokens, cost, and any OCR error.
 
 ---
 
-## 10. Troubleshooting
+## 9. Troubleshooting
+
+### "OPENROUTER_API_KEY is not set"
+
+Create `.env` from `.env.example` and add your key, or `export OPENROUTER_API_KEY=...` in the shell.
+
+### Every file fails with 401 / 402
+
+401 means the key is invalid; 402 means the OpenRouter account is out of credits. These errors fail the whole file (rather than silently falling back to PyMuPDF text), so the files are retried on the next run once fixed.
 
 ### "All word counts are 0"
 
-This is likely correct behavior. Check:
-1. **Inspect the extracted text**: `cat output/extracted_text/XXXX_YYYY_text.txt`
-2. Most sustainability reports are in **Indonesian** — the dictionary terms are in **English**
-3. Short PDFs (1–3 pages) may be summary pages with minimal text
-4. Check `output/process_summary.csv` → `total_extracted_chars` column to verify text was extracted
-
-### "Permission denied" or "API not enabled"
-
-1. Verify the service account JSON is in `service_account/`
-2. Check that **Vertex AI API** is enabled in your GCP project
-3. Verify the service account has the **Vertex AI User** role
+This is often correct. Check:
+1. **Inspect the extracted text**: `cat output/extracted_text/XXXX_YYYY_pymupdf_text.txt`
+2. Many reports are in **Indonesian** — the dictionary terms are in **English**
+3. Check `process_summary.csv` → `total_extracted_chars` to verify text was extracted
 
 ### "Filename doesn't match pattern"
 
-PDFs must be named `XXXX_YYYY.pdf`. Files that don't match are logged as `failed` but don't stop the pipeline. Rename the files to match the pattern.
-
-### Pipeline interrupted mid-run
-
-Just re-run it. The pipeline reads the ledger and skips completed files:
-```bash
-python -c "from src.pipeline import run_pipeline; run_pipeline(max_files=None)"
-```
+PDFs must be named `XXXX_YYYY.pdf` (or `XXXX-YYYY.pdf`). Rename files such as `LABA_2023(1).pdf`.
 
 ### Rate limiting (HTTP 429)
 
-Increase the delay between API calls in `src/config.py`:
+Rate-limited pages are retried with exponential backoff. If it persists, reduce parallel workers or add a delay in `src/config.py`:
+
 ```python
-API_DELAY_SECONDS = 1  # Wait 1 second between OCR calls
-```
-
-Or reduce parallel workers:
-```python
-MAX_WORKERS = 2  # Fewer concurrent API calls
-```
-
-### Re-process failed files
-
-Failed files are automatically retried on the next run (the ledger marks them as `failed`, not `success`).
-
-To see which files failed:
-```python
-import pandas as pd
-df = pd.read_csv("output/process_summary.csv")
-failed = df[df["status"] == "failed"]
-print(failed[["file_name", "error_message"]])
+MAX_WORKERS = 2
+API_DELAY_SECONDS = 1
 ```

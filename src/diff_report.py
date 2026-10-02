@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.config import PRICE_INPUT_PER_M, PRICE_OUTPUT_PER_M
+from src.config import MODEL_ID
+from src.llm_client import estimate_cost
 from src.logger import get_logger
 
 logger = get_logger("diff_report")
@@ -122,10 +123,10 @@ def _build_run_summary(summary_df: pd.DataFrame, token_df: pd.DataFrame) -> str:
 
     total_input = int(token_df["prompt_tokens"].sum()) if not token_df.empty else 0
     total_output = int(token_df["output_tokens"].sum()) if not token_df.empty else 0
-    total_cost = (
-        total_input / 1_000_000 * PRICE_INPUT_PER_M
-        + total_output / 1_000_000 * PRICE_OUTPUT_PER_M
-    )
+    if not token_df.empty and "cost_usd" in token_df.columns:
+        total_cost = float(token_df["cost_usd"].sum())
+    else:
+        total_cost = estimate_cost(total_input, total_output)
 
     total_time = summary_df.get("processing_time_seconds", pd.Series([0])).sum()
 
@@ -140,12 +141,13 @@ def _build_run_summary(summary_df: pd.DataFrame, token_df: pd.DataFrame) -> str:
         lines.append(f"| Pages via PyMuPDF (text) | {direct_pages:,} ({direct_pct:.1f}%) |")
     if ocr_pages > 0:
         ocr_pct = ocr_pages / total_pages * 100 if total_pages > 0 else 0
-        lines.append(f"| Pages via Gemini OCR (image) | {ocr_pages:,} ({ocr_pct:.1f}%) |")
+        lines.append(f"| Pages via LLM OCR (image) | {ocr_pages:,} ({ocr_pct:.1f}%) |")
     lines.append(f"| Total characters extracted | {total_chars:,} |")
     if total_input > 0:
-        lines.append(f"| Gemini input tokens | {total_input:,} |")
-        lines.append(f"| Gemini output tokens | {total_output:,} |")
-        lines.append(f"| Estimated OCR cost | ~${total_cost:.2f} |")
+        lines.append(f"| OCR model (OpenRouter) | `{MODEL_ID}` |")
+        lines.append(f"| OCR input tokens | {total_input:,} |")
+        lines.append(f"| OCR output tokens | {total_output:,} |")
+        lines.append(f"| OCR cost | ~${total_cost:.2f} |")
     if total_time > 0:
         lines.append(f"| Total processing time | {total_time / 3600:.1f} hours |")
         avg_time = total_time / total if total > 0 else 0
@@ -343,7 +345,7 @@ def _build_output_files_section() -> str:
         "All CSV files are included in this folder for direct download and analysis.\n",
         "- **`wordcount_results.csv`** \u2014 One row per (company, year, dimension, term). Cumulative across all runs.",
         "- **`process_summary.csv`** \u2014 One row per PDF file. Processing metadata and status.",
-        "- **`token_usage.csv`** \u2014 One row per Gemini OCR API call. Token usage tracking.",
+        "- **`token_usage.csv`** \u2014 One row per LLM OCR API call (OpenRouter). Token usage and cost tracking.",
         "- **`page_diagnostics.csv`** \u2014 One row per page. Extraction method, classification, diagnostics.",
         "",
     ]

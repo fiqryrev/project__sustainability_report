@@ -169,7 +169,8 @@ __marimo__/
 # Project-specific
 # ============================================
 
-# PDF data (too large for git)
+# PDF data (too large for git; never commit)
+/data/
 data_ar_kam/
 
 # Generated output (reproducible)
@@ -178,8 +179,9 @@ output/
 # Runtime logs
 logs/
 
-# Credentials (sensitive)
+# Credentials (sensitive) — OpenRouter key lives in .env (ignored above)
 service_account/
+!.env.example
 
 # Reference notebooks (not part of pipeline)
 sample_code/
@@ -197,4 +199,3 @@ test.py
 .idea/
 *.swp
 *.swo
-
