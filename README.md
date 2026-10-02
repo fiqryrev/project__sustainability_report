@@ -42,7 +42,8 @@ Automated pipeline that extracts text from PDF annual reports and counts occurre
 │   ├── 001-march-2026-full-reports/   # Short-form excerpts (2022–2024)
 │   ├── 002-march-2026-full-reports/   # Full annual reports, first 240
 │   ├── 003-march-2026-full-reports/   # + 100 full reports
-│   └── 004-march-2026-full-reports/   # + 2,048 full reports (2022–2024 cumulative)
+│   ├── 004-march-2026-full-reports/   # + 2,048 full reports (2022–2024 cumulative)
+│   └── 005-october-2026-full-reports/ # + 888 full reports for 2025 (2022–2025 cumulative)
 │
 ├── pipeline_notebook.ipynb     # Jupyter notebook (incremental pipeline + analysis)
 ├── dt_kam_wordcount.csv        # Dictionary: 101 terms across 4 dimensions
@@ -110,7 +111,7 @@ Matching is case-insensitive exact **substring** matching after whitespace norma
 
 ## Output
 
-Results are published to versioned folders in `results/`. Each run creates the next folder (e.g. `results/005-september-2026-full-reports/`) containing cumulative data:
+Results are published to versioned folders in `results/`. Each run creates the next folder (e.g. `results/006-<month>-<year>-full-reports/`) containing cumulative data:
 
 | File | Description |
 |---|---|
@@ -175,6 +176,7 @@ See [docs/guides/001-setup-and-usage.md](docs/guides/001-setup-and-usage.md) for
 | 002 | `results/002-march-2026-full-reports/` | 240 | 104 | Gemini 3.1 Flash Lite | Full annual reports |
 | 003 | `results/003-march-2026-full-reports/` | 340 | 143 | Gemini 3.1 Flash Lite | +100 full annual reports |
 | 004 | `results/004-march-2026-full-reports/` | 2,383 | 905 | Gemini 3.1 Flash Lite | +2,048 full annual reports (2022–2024) |
+| 005 | `results/005-october-2026-full-reports/` | 3,271 | 940 | Gemini 2.5 Flash Lite via OpenRouter | +888 full annual reports for 2025 (2022–2025) — [run report](results/005-october-2026-full-reports/005-october-2026-run.md) |
 
 See individual run reports inside each results folder for detailed analysis.
 
